@@ -681,6 +681,17 @@ func (dq *DynamoDBQueue) DropQueueTable(ctx context.Context) error {
 	return nil
 }
 
+// TableExists will check if the table exist, if not, it will return
+// `false`, otherwise it will return `true`.
+func (dq *DynamoDBQueue) TableExists(ctx context.Context) bool {
+	_, err := dq.client.DescribeTable(
+		ctx,
+		&dynamodb.DescribeTableInput{TableName: aws.String(dq.table)},
+	)
+
+	return err == nil
+}
+
 // CreateQueueTable will create the DynamoDB table for the queue in on-demand mode.
 //
 // It will have the _TTL_ enabled and therefore messages are automatically deleted.

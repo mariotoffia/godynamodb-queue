@@ -79,6 +79,22 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+func TestCheckIfTableExistSuccess(t *testing.T) {
+	exist := queue.TableExists(context.Background())
+
+	assert.True(t, exist)
+}
+
+func TestCheckIfTableExistFailure(t *testing.T) {
+	ctx, cfg := newCtxAndConfig()
+
+	exits := dynamodbqueue.NewDynamoDBQueue(ctx, cfg, 0).
+		UseTable(dynamodbqueue.RandomPostfix("non-existent-table")).
+		TableExists(ctx)
+
+	assert.False(t, exits)
+}
+
 func TestPutAndPollItemsThenDeleteThem(t *testing.T) {
 	ctx := context.Background()
 
