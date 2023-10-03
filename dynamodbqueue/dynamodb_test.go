@@ -95,6 +95,51 @@ func TestCheckIfTableExistFailure(t *testing.T) {
 	assert.False(t, exits)
 }
 
+func TestListQueues(t *testing.T) {
+	ctx := context.Background()
+
+	// Clear the queue before testing
+	err := queue.PurgeAll(ctx)
+
+	assert.NoError(t, err)
+
+	// Push a set of messages and change queue and client id names.
+	queues := []string{"queue1", "queue2", "queue3"}
+	clientID := []string{"client1", "client2", "client3"}
+
+	for _, q := range queues {
+		for _, c := range clientID {
+			_, err := queue.UseQueueName(q).
+				UseClientID(c).
+				PushMessages(ctx, 0, events.SQSMessage{Body: fmt.Sprintf("test-%s-%s", q, c)})
+
+			assert.NoError(t, err)
+		}
+	}
+
+	// List all queues
+	found, err := queue.List(ctx)
+
+	assert.NoError(t, err)
+	assert.Len(t, found, len(queues)*len(clientID))
+
+	find := func(q string, c string) bool {
+		for _, f := range found {
+			if f.QueueName == q && f.ClientID == c {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	for _, q := range queues {
+		for _, c := range clientID {
+			assert.True(t, find(q, c), "Could not find queue: %s and client: %s", q, c)
+		}
+	}
+}
+
 func TestPutAndPollItemsThenDeleteThem(t *testing.T) {
 	ctx := context.Background()
 

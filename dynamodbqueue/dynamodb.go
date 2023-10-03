@@ -3,6 +3,7 @@ package dynamodbqueue
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -41,6 +42,8 @@ const (
 	ClientIDNotSet  = "client ID not set"
 )
 
+// QueueType specifies how polling works, this may be dynamically changed for each
+// poll. Default is _FIFO_.
 type QueueType int
 
 const (
@@ -49,6 +52,12 @@ const (
 	// QueueTypeLIFO is a LIFO queue. This affect sorting of messages.
 	QueueTypeLIFO QueueType = 1
 )
+
+// QueueAndClientId is used when `List` operation.
+type QueueAndClientId struct {
+	QueueName string `json:"qn"`
+	ClientID  string `json:"cid"`
+}
 
 // DynamoDBQueue is a implementation of a queue but have
 // DynamoDB table as the backing store.
@@ -536,6 +545,76 @@ func (dq *DynamoDBQueue) Count(ctx context.Context) (int32, error) {
 	}
 
 	return output.Count, nil
+}
+
+// List will return all queues that exists in the system.
+//
+// CAUTION: This is a really expensive operation since it will perform a table scan.
+// to get all partition keys.
+func (dq *DynamoDBQueue) List(ctx context.Context) ([]QueueAndClientId, error) {
+	if dq.table == "" {
+		return nil, fmt.Errorf(TableNameNotSet)
+	}
+
+	var lastEvaluatedKey map[string]types.AttributeValue
+
+	seen := make(map[string]bool)
+	all := make([]QueueAndClientId, 0)
+
+	expr, err := expression.NewBuilder().
+		WithProjection(expression.NamesList(expression.Name(ColumnPK))).
+		Build()
+
+	if err != nil {
+		panic(err)
+	}
+
+	// Continue scanning until all items are covered
+	for {
+		input := &dynamodb.ScanInput{
+			TableName:                &dq.table,
+			ProjectionExpression:     expr.Projection(),
+			ExpressionAttributeNames: expr.Names(),
+		}
+
+		if lastEvaluatedKey != nil {
+			input.ExclusiveStartKey = lastEvaluatedKey
+		}
+
+		// Execute the scan
+		response, err := dq.client.Scan(ctx, input)
+
+		if err != nil {
+			return nil, err
+		}
+
+		for _, item := range response.Items {
+			pk := ""
+			err = attributevalue.Unmarshal(item[ColumnPK], &pk)
+
+			if err != nil {
+				return nil, err
+			}
+
+			if _, exists := seen[pk]; !exists {
+				// New queue and clientID combination
+				seen[pk] = true
+				parts := strings.Split(pk, "-")
+
+				if len(parts) == 2 {
+					all = append(all, QueueAndClientId{QueueName: parts[0], ClientID: parts[1]})
+				}
+			}
+		}
+
+		if response.LastEvaluatedKey == nil {
+			break
+		}
+
+		lastEvaluatedKey = response.LastEvaluatedKey
+	}
+
+	return all, nil
 }
 
 // Purge deletes all messages from the queue based on the queueName and clientID.
