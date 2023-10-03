@@ -50,6 +50,19 @@ now() is greater than hidden_until.
 NOTE: The DynamoDB table must be configured with the TTL option on the TTL column in order for it to
 be deleted automatically.
 
+It has convenience functions to create tables with proper configuration in runtime (as well as drop them).
+
+.Create Table
+[source,go]
+----
+ctx := context.Background()
+config, _ := awsconfig.LoadDefaultConfig(ctx)
+
+created, _ := dynamodbqueue.NewDynamoDBQueue(ctx, cfg, 0).
+  UseTable("queue-table").
+  CreateQueueTable(ctx)
+----
+
 == Sample Usage
 
 It is very flexible to use, you may modify the `DynamoDbQueue` at runtime to change the mode of operation, queue, client, visibility timeout and so on. It is even possible to change the TTL for the message to live at runtime.
@@ -58,8 +71,9 @@ It is very flexible to use, you may modify the `DynamoDbQueue` at runtime to cha
 [source,go]
 ----
 ctx := context.Background()
+config, _ := awsconfig.LoadDefaultConfig(ctx)
 
-queue = dynamodbqueue.NewDynamoDBQueue(ctx, cfg, 0). <1>
+queue := dynamodbqueue.NewDynamoDBQueue(ctx, cfg, 0). <1>
   UseQueueName("testQueue").
   UseClientID("testClientId")
 
