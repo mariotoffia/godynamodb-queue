@@ -50,22 +50,30 @@ func TestMain(m *testing.M) {
 
 	if err != nil {
 		if created {
-			queue.DropQueueTable(ctx)
+			err = queue.DropQueueTable(ctx)
 		}
 
 		panic(err)
 	}
 
 	// Drop everything before running tests
-	queue.PurgeAll(ctx)
+	err = queue.PurgeAll(ctx)
+
+	if err != nil {
+		panic(err)
+	}
 
 	code := m.Run()
 
 	// Make sure to clean up
-	queue.PurgeAll(ctx)
+	err = queue.PurgeAll(ctx)
 
 	if created {
-		queue.DropQueueTable(ctx)
+		err = queue.DropQueueTable(ctx)
+	}
+
+	if err != nil {
+		panic(err)
 	}
 
 	os.Exit(code)
@@ -75,7 +83,11 @@ func TestPutAndPollItemsThenDeleteThem(t *testing.T) {
 	ctx := context.Background()
 
 	// Clear the queue before testing
-	queue.UseQueueName("testQueue").UseClientID("testClientId").Purge(ctx)
+	err := queue.UseQueueName("testQueue").
+		UseClientID("testClientId").
+		Purge(ctx)
+
+	assert.NoError(t, err)
 
 	msgs, err := queue.PushMessages(ctx, 0 /*defaultTTL*/, events.SQSMessage{
 		Attributes: map[string]string{
@@ -120,8 +132,17 @@ func TestQueueIsolation(t *testing.T) {
 	ctx := context.Background()
 
 	// Clear both queues
-	queue.UseQueueName("queueA").UseClientID("client1").Purge(ctx)
-	queue.UseQueueName("queueB").UseClientID("client1").Purge(ctx)
+	err2 := queue.UseQueueName("queueA").
+		UseClientID("client1").
+		Purge(ctx)
+
+	require.NoError(t, err2)
+
+	err2 = queue.UseQueueName("queueB").
+		UseClientID("client1").
+		Purge(ctx)
+
+	require.NoError(t, err2)
 
 	// Push a message to queueA and queueB
 	_, err := queue.UseQueueName("queueA").
@@ -161,8 +182,17 @@ func TestClientIsolationWithinQueue(t *testing.T) {
 	ctx := context.Background()
 
 	// Clear for both client IDs
-	queue.UseQueueName("commonQueue").UseClientID("clientA").Purge(ctx)
-	queue.UseQueueName("commonQueue").UseClientID("clientB").Purge(ctx)
+	err2 := queue.UseQueueName("commonQueue").
+		UseClientID("clientA").
+		Purge(ctx)
+
+	require.NoError(t, err2)
+
+	err2 = queue.UseQueueName("commonQueue").
+		UseClientID("clientB").
+		Purge(ctx)
+
+	require.NoError(t, err2)
 
 	// Push a message using clientA
 	_, err := queue.UseQueueName("commonQueue").
@@ -208,10 +238,12 @@ func TestMessageOrderPreservationFIFO(t *testing.T) {
 	clientID := "testClient"
 
 	// Clear the queue
-	queue.UseQueueName(queueName).
+	err2 := queue.UseQueueName(queueName).
 		UseClientID(clientID).
 		AsQueueType(dynamodbqueue.QueueTypeFIFO).
 		Purge(ctx)
+
+	require.NoError(t, err2)
 
 	// Insert messages into the queue in a specific order
 	messages := []string{"first", "second", "third", "fourth"}
@@ -244,10 +276,12 @@ func TestMessageOrderPreservationLIFO(t *testing.T) {
 	clientID := "testClient"
 
 	// Clear the queue
-	queue.UseQueueName(queueName).
+	err2 := queue.UseQueueName(queueName).
 		UseClientID(clientID).
 		AsQueueType(dynamodbqueue.QueueTypeLIFO).
 		Purge(ctx)
+
+	require.NoError(t, err2)
 
 	// Insert messages into the queue in a specific order
 	messages := []string{"first", "second", "third", "fourth"}
@@ -286,7 +320,11 @@ func TestVisibilityTimeoutFunctionality(t *testing.T) {
 	clientID := "testClient"
 
 	// Clear the queue
-	queue.UseQueueName(queueName).UseClientID(clientID).Purge(ctx)
+	err2 := queue.UseQueueName(queueName).
+		UseClientID(clientID).
+		Purge(ctx)
+
+	require.NoError(t, err2)
 
 	// Push a message into the queue
 	messageBody := "visibilityTest"
@@ -335,7 +373,11 @@ func TestVisibilityTimeoutEffectiveness(t *testing.T) {
 	visibilityTimeout := 5 * time.Second
 
 	// Clear the queue before testing
-	queue.UseQueueName(queueName).UseClientID(clientID).Purge(ctx)
+	err2 := queue.UseQueueName(queueName).
+		UseClientID(clientID).
+		Purge(ctx)
+
+	require.NoError(t, err2)
 
 	// Push a single message
 	_, err := queue.UseQueueName(queueName).
@@ -380,7 +422,11 @@ func TestVisibilityTimeoutRecovery(t *testing.T) {
 	visibilityTimeout := 5 * time.Second
 
 	// Clear the queue before testing
-	queue.UseQueueName(queueName).UseClientID(clientID).Purge(ctx)
+	err2 := queue.UseQueueName(queueName).
+		UseClientID(clientID).
+		Purge(ctx)
+
+	require.NoError(t, err2)
 
 	// Push a single message into the queue
 	_, err := queue.UseQueueName(queueName).
@@ -427,7 +473,11 @@ func TestPurgeFunctionality(t *testing.T) {
 	visibilityTimeout := 5 * time.Minute // Set it high intentionally
 
 	// Clear the queue before testing
-	queue.UseQueueName(queueName).UseClientID(clientID).Purge(ctx)
+	err2 := queue.UseQueueName(queueName).
+		UseClientID(clientID).
+		Purge(ctx)
+
+	require.NoError(t, err2)
 
 	// Populate the queue with messages
 	for i := 0; i < totalMessages; i++ {
@@ -472,7 +522,11 @@ func TestPushMessageLimits(t *testing.T) {
 	smallMessage := "test"
 
 	// Clear the queue before testing
-	queue.UseQueueName(queueName).UseClientID(clientID).Purge(ctx)
+	err2 := queue.UseQueueName(queueName).
+		UseClientID(clientID).
+		Purge(ctx)
+
+	require.NoError(t, err2)
 
 	// Attempt to push a message that exceeds size limit
 	_, err := queue.PushMessages(ctx, 0, events.SQSMessage{Body: bigMessage})
@@ -499,7 +553,11 @@ func TestVisibilityTimeoutRespect(t *testing.T) {
 	visibilityTimeout := 5 * time.Second
 
 	// Clear the queue before testing
-	queue.UseQueueName(queueName).UseClientID(clientID).Purge(ctx)
+	err2 := queue.UseQueueName(queueName).
+		UseClientID(clientID).
+		Purge(ctx)
+
+	require.NoError(t, err2)
 
 	// Push a message to the queue
 	_, err := queue.UseQueueName(queueName).
@@ -545,7 +603,11 @@ func TestConcurrentWritersIntegrity(t *testing.T) {
 	messagesPerWriter := 100
 
 	// Clear the queue before testing
-	queue.UseQueueName(queueName).UseClientID(clientID).Purge(ctx)
+	err2 := queue.UseQueueName(queueName).
+		UseClientID(clientID).
+		Purge(ctx)
+
+	require.NoError(t, err2)
 
 	var wg sync.WaitGroup
 
@@ -590,7 +652,11 @@ func TestVisibilityTimeoutUnderLoad(t *testing.T) {
 	visibilityTimeout := 50 * time.Second
 
 	// Clear the queue before testing
-	queue.UseQueueName(queueName).UseClientID(clientID).Purge(ctx)
+	err2 := queue.UseQueueName(queueName).
+		UseClientID(clientID).
+		Purge(ctx)
+
+	require.NoError(t, err2)
 
 	var messages []events.SQSMessage
 	// Populate the queue with messages
@@ -663,7 +729,11 @@ func TestContinuousWriteAndReadWithNoDuplicates(t *testing.T) {
 	totalMessages := 100
 
 	// Clear the queue
-	queue.UseQueueName(queueName).UseClientID(clientID).Purge(ctx)
+	err2 := queue.UseQueueName(queueName).
+		UseClientID(clientID).
+		Purge(ctx)
+
+	require.NoError(t, err2)
 
 	var mu sync.Mutex
 
