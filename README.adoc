@@ -50,4 +50,50 @@ now() is greater than hidden_until.
 NOTE: The DynamoDB table must be configured with the TTL option on the TTL column in order for it to
 be deleted automatically.
 
+== Sample Usage
 
+It is very flexible to use, you may modify the `DynamoDbQueue` at runtime to change the mode of operation, queue, client, visibility timeout and so on. It is even possible to change the TTL for the message to live at runtime.
+
+.Simple Example
+[source,go]
+----
+ctx := context.Background()
+
+queue = dynamodbqueue.NewDynamoDBQueue(ctx, cfg, 0). <1>
+  UseQueueName("testQueue").
+  UseClientID("testClientId")
+
+msgs, _ := queue.PushMessages(ctx, 0 /*defaultTTL*/, events.SQSMessage{ // <2>
+  MessageAttributes: map[string]events.SQSMessageAttribute{
+    "test2": { DataType: "String", StringValue: aws.String("test2") },
+  },
+  Body: "test body",
+})
+
+// Check the number of messages in the queue
+count, _ := queue.Count(ctx)
+
+// Poll max 10 messages (return as fast as possible)
+msgs, _ = queue.PollMessages( // <3>
+  ctx,
+  0,              /*noTimeout*/
+  time.Minute*14, /*visibilityTimeout*/
+  10,             /*maxMessages*/
+)
+
+// Use the messages and then delete them
+queue.DeleteMessages(ctx, ToReceiptHandles(msgs)...) // <4>
+----
+<1> Create a queue manager with queueName and clientID.
+<2> Push one or more messages to the queue
+<3> Poll for messages, max 10 messages and exit as fast as possible. "Own" the messages for 14 minutes.
+<4> Since owner, it is possible to delete the messages using the receipt handles.
+
+When the timeout is set to a positive value, it will continuously try to get maxMessages before exiting the loop.
+
+When pulling the messages, it uses DynamoDBs ability to set a criteria before setting ownership of message, therefore it is safe for different clients, and processes to use this queue simoulatinously.
+
+== The Idea
+
+This idea, was born when the usage of SQS queues was not sufficient flexible. I had a set of queues and a set of clients and there where no possibility to dequeue messages that has e.g. a discriminator to select on. I.e it would consume other
+clients messages and push back them into the queue, making it very inefficient. I do love _SQS_ but it was not usable for that particular use-case.

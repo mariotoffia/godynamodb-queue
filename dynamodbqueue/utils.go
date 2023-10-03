@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
@@ -107,6 +108,20 @@ func ToBatches[T any](items []T, batchSize int) [][]T {
 	return batches
 }
 
+// ToReceiptHandles will extract the receipt handles from the SQS messages.
+func ToReceiptHandles(msgs []events.SQSMessage) []string {
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	receiptHandles := make([]string, len(msgs))
+
+	for i, msg := range msgs {
+		receiptHandles[i] = msg.ReceiptHandle
+	}
+
+	return receiptHandles
+}
 func RandomString(n int) string {
 	var letters = []rune("abcdefghijklmnopqrstuvwxyz0123456789")
 

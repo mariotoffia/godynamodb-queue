@@ -110,7 +110,7 @@ func TestPutAndPollItemsThenDeleteThem(t *testing.T) {
 
 	fmt.Println(msgs[0].ReceiptHandle)
 
-	notDeleted, err := queue.DeleteMessages(ctx, msgs[0].ReceiptHandle)
+	notDeleted, err := queue.DeleteMessages(ctx, dynamodbqueue.ToReceiptHandles(msgs)...)
 
 	require.NoError(t, err)
 	assert.Len(t, notDeleted, 0)
