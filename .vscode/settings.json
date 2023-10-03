@@ -4,7 +4,12 @@
     "awsconfig",
     "dynamodbqueue",
     "godynamodb",
+    "highlightjs",
+    "imagesdir",
+    "latexmath",
     "mariotoffia",
-    "stretchr"
+    "stretchr",
+    "toclevels",
+    "Toffia"
   ]
 }

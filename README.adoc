@@ -1,0 +1,47 @@
+:author_name: Mario Toffia
+:author_email: <use discussions on github>
+:author: {author_name}
+:email: {author_email}
+:source-highlighter: highlightjs
+:toc:
+:toc-title: Table of Contents
+:toclevels: 3
+:homepage: github.com/mariotoffia/godynamodb-queue
+:stem: latexmath
+:doctype: book
+:imagesdir: ./assets
+:icons: font
+
+= DynamoDB as Queue in golang
+
+![Go Build and Test](https://github.com/mariotoffia/godynamodb-queue/workflows/Go%20Build%20and%20Test/badge.svg)
+[![Go Reference](https://pkg.go.dev/badge/mariotoffia/godynamodb-queue/repository.svg)](https://pkg.go.dev/mod/github.com/mariotoffia/godynamodb-queue)
+
+== Introduction
+
+This is a flexible queue, using DynamoDB as backend. This supports both a _QueueName_ and one to many _ClientID_s hence, it is possible to have multiple isolated clients under the same _QueueName_.
+By default, the queue is set into _FIFO_ mode, but may be altered at runtime to _LIFO_.
+
+Since multiple `DynamoDbQueue`/processes can simultaneously read/write/delete from the queue it will use a `visibilityTimeout` to ensure that only one consumer can process a message at a time.
+
+The DynamoDB Table have the following schema:
+
+[cols="1,1,1,1,1,1", options="header"]
+|===
+|PK |SK |hidden_until |owner |TTL |event
+
+|queueName-clientID 
+|`{unix-64-bit-timestamp (nanoseconds) + "_" + random_string}`
+|`{now()+visibilityTimeout}`
+|owner 
+|ttl 
+|`{events.SQSMessage}``
+|===
+
+When the query is commenced, it will query for all messages within PK (oldest first) and that
+now() is greater than hidden_until.
+
+NOTE: The DynamoDB table must be configured with the TTL option on the TTL column in order for it to
+be deleted automatically.
+
+
