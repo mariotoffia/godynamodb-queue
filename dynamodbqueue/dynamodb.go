@@ -108,10 +108,10 @@ type DynamoDBQueue struct {
 	queueType QueueType
 }
 
-// NewDynamoDBQueue creates a new `DynamoDBQueue` instance.
+// New creates a new `DynamoDBQueue` instance.
 //
 // If the ttl is set to zero, it will use the default of 14 days.
-func NewDynamoDBQueue(ctx context.Context, cfg aws.Config, ttl time.Duration) *DynamoDBQueue {
+func New(cfg aws.Config, ttl time.Duration) *DynamoDBQueue {
 	if ttl == 0 {
 		ttl = 14 * 24 * time.Hour
 	}

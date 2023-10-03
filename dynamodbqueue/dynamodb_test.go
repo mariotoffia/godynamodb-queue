@@ -43,7 +43,7 @@ func inLogUnitTest() bool {
 // TestMain will create a dynamodb table, run all tests and then drop the table.
 func TestMain(m *testing.M) {
 	ctx, cfg := newCtxAndConfig()
-	queue = dynamodbqueue.NewDynamoDBQueue(ctx, cfg, 0)
+	queue = dynamodbqueue.New(cfg, 0)
 
 	created, err := queue.UseTable(dynamodbqueue.RandomPostfix("test") /*"unit-test-queue-table"*/).
 		CreateQueueTable(ctx)
@@ -88,7 +88,7 @@ func TestCheckIfTableExistSuccess(t *testing.T) {
 func TestCheckIfTableExistFailure(t *testing.T) {
 	ctx, cfg := newCtxAndConfig()
 
-	exits := dynamodbqueue.NewDynamoDBQueue(ctx, cfg, 0).
+	exits := dynamodbqueue.New(cfg, 0).
 		UseTable(dynamodbqueue.RandomPostfix("non-existent-table")).
 		TableExists(ctx)
 
