@@ -36,6 +36,8 @@ const (
 	AttrSentTimestamp = "SentTimestamp"
 )
 
+const PartitionKeySeparator = "+-+"
+
 const (
 	TableNameNotSet = "table name not set"
 	QueueNameNotSet = "queue name not set"
@@ -80,6 +82,8 @@ type QueueAndClientId struct {
 // |queueName-clientID |{unix-64-bit-timestamp + "_" + random_string} |{now()+visibilityTimeout} |owner |ttl |{events.SQSMessage}
 // |===
 //
+// The PK is separated using the `PartitionKeySeparator` of which is "+-+" by default.
+//
 // When the query is commenced, it will query for all messages within PK (oldest first) and that
 // now() is greater than hidden_until.
 //
@@ -93,7 +97,7 @@ type DynamoDBQueue struct {
 	// clientID the second part of the partition key (PK) for the queue. So it is possible
 	// to have multiple consumers of the same queue that is isolated from each other.
 	//
-	// NOTE: Technically this each queueName-clientID pair is a separate queue.
+	// NOTE: Technically this each queueName, clientID pair is a separate queue.
 	clientID string
 	// queueName is the name of the queue. This is one component of the partition key.
 	queueName string
@@ -188,7 +192,7 @@ func (dp *DynamoDBQueue) QueueName() string {
 
 // PartitionKey is the _queueName_ + '_' + _clientID_.
 func (dq *DynamoDBQueue) PartitionKey() string {
-	return dq.queueName + "-" + dq.clientID
+	return dq.queueName + PartitionKeySeparator + dq.clientID
 }
 
 func (dq *DynamoDBQueue) RandomDigits() int {
@@ -237,7 +241,7 @@ func (dq *DynamoDBQueue) PollMessages(
 	for {
 		// Calculate remaining visibility time for messages
 		expr, err := expression.NewBuilder().
-			// PK = queueName-clientID -> the queue
+			// PK = queueName++-++clientID -> the queue
 			WithKeyCondition(expression.Key("PK").Equal(expression.Value(dq.PartitionKey()))).
 			WithFilter(
 				// hidden_until < now() -> the message is visible
@@ -363,7 +367,7 @@ func (dq *DynamoDBQueue) PollMessages(
 }
 
 // PushMessages pushes one or more messages onto the database. It uses the unix nanosecond timestamp as SK.
-// The primary key is the queueName-clientID. If ttl is set to zero, it will use the default DynamoDBQueue.ttl.
+// The primary key is the queueName{`PartitionKeySeparator`}clientID. If ttl is set to zero, it will use the default DynamoDBQueue.ttl.
 //
 // This function strives to create unique SKs by using the unix nanosecond timestamp plus a random number with n
 // digits. The n is by default 6 but can be altered to be higher by `SetRandomDigits()` function.
@@ -604,7 +608,7 @@ func (dq *DynamoDBQueue) List(ctx context.Context) ([]QueueAndClientId, error) {
 			if _, exists := seen[pk]; !exists {
 				// New queue and clientID combination
 				seen[pk] = true
-				parts := strings.Split(pk, "-")
+				parts := strings.Split(pk, PartitionKeySeparator)
 
 				if len(parts) == 2 {
 					all = append(all, QueueAndClientId{QueueName: parts[0], ClientID: parts[1]})
