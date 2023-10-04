@@ -215,10 +215,15 @@ func (dq *DynamoDBQueue) RandomDigits() int {
 // The recipient handle is a combination of the PK and SK. It also adds the hidden_until
 // and owner to the receipt handle to ensure that the message is not accidentally deleted
 // by another consumer.
+//
+// It will poll until _timeout_ for _minMessages_, and will return at most _maxMessages_.
+//
+// If _timeout_ is set to zero, it will do one fetch and return even if _minMessages_ is not
+// reached.
 func (dq *DynamoDBQueue) PollMessages(
 	ctx context.Context,
 	timeout, visibilityTimeout time.Duration,
-	maxMessages int,
+	minMessages, maxMessages int,
 ) ([]events.SQSMessage, error) {
 	if err := dq.validateOperation(ctx); err != nil {
 		return nil, err
@@ -337,7 +342,7 @@ func (dq *DynamoDBQueue) PollMessages(
 		}
 
 		// If there's no more data or we reached the desired number of messages, break out of the loop
-		if len(messages) >= maxMessages {
+		if len(messages) >= minMessages {
 			break
 		}
 

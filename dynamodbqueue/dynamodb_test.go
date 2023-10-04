@@ -175,6 +175,7 @@ func TestPutAndPollItemsThenDeleteThem(t *testing.T) {
 		ctx,
 		0,              /*noTimeout*/
 		time.Minute*14, /*visibilityTimeout*/
+		10,             /*minMessages*/
 		10,             /*maxMessages*/
 	)
 
@@ -221,14 +222,14 @@ func TestQueueIsolation(t *testing.T) {
 	// Poll messages from queueA
 	msgsA, err := queue.UseQueueName("queueA").
 		UseClientID("client1").
-		PollMessages(ctx, 0, time.Minute, 10)
+		PollMessages(ctx, 0, time.Minute, 10, 10)
 
 	require.NoError(t, err)
 
 	// Poll messages from queueB
 	msgsB, err := queue.UseQueueName("queueB").
 		UseClientID("client1").
-		PollMessages(ctx, 0, time.Minute, 10)
+		PollMessages(ctx, 0, time.Minute, 10, 10)
 
 	require.NoError(t, err)
 
@@ -272,14 +273,14 @@ func TestClientIsolationWithinQueue(t *testing.T) {
 	// Poll messages using clientA
 	msgsA, err := queue.UseQueueName("commonQueue").
 		UseClientID("clientA").
-		PollMessages(ctx, 0, time.Minute, 10)
+		PollMessages(ctx, 0, time.Minute, 10, 10)
 
 	require.NoError(t, err)
 
 	// Poll messages using clientB
 	msgsB, err := queue.UseQueueName("commonQueue").
 		UseClientID("clientB").
-		PollMessages(ctx, 0, time.Minute, 10)
+		PollMessages(ctx, 0, time.Minute, 10, 10)
 
 	require.NoError(t, err)
 
@@ -319,7 +320,7 @@ func TestMessageOrderPreservationFIFO(t *testing.T) {
 	// Poll the messages
 	polledMessages, err := queue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, time.Minute, len(messages))
+		PollMessages(ctx, 0, time.Minute, len(messages), len(messages))
 
 	require.NoError(t, err)
 	require.Len(t, polledMessages, len(messages))
@@ -358,7 +359,7 @@ func TestMessageOrderPreservationLIFO(t *testing.T) {
 	// Poll the messages
 	polledMessages, err := queue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, time.Minute, len(messages))
+		PollMessages(ctx, 0, time.Minute, len(messages), len(messages))
 
 	require.NoError(t, err)
 	require.Len(t, polledMessages, len(messages))
@@ -399,7 +400,7 @@ func TestVisibilityTimeoutFunctionality(t *testing.T) {
 	visibilityTimeout := time.Second * 10
 	polledMessages, err := queue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, visibilityTimeout, 1)
+		PollMessages(ctx, 0, visibilityTimeout, 1, 1)
 
 	require.NoError(t, err)
 	require.Len(t, polledMessages, 1)
@@ -408,7 +409,7 @@ func TestVisibilityTimeoutFunctionality(t *testing.T) {
 	// Try polling immediately, should get no messages because of visibility timeout
 	polledMessages, err = queue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, visibilityTimeout, 1)
+		PollMessages(ctx, 0, visibilityTimeout, 1, 1)
 
 	require.NoError(t, err)
 	require.Len(t, polledMessages, 0)
@@ -419,7 +420,7 @@ func TestVisibilityTimeoutFunctionality(t *testing.T) {
 	// Now, try polling again. The message should be visible now.
 	polledMessages, err = queue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, visibilityTimeout, 1)
+		PollMessages(ctx, 0, visibilityTimeout, 1, 1)
 
 	require.NoError(t, err)
 	require.Len(t, polledMessages, 1)
@@ -450,7 +451,7 @@ func TestVisibilityTimeoutEffectiveness(t *testing.T) {
 	// Poll the message with consumer1
 	polledMessages, err := queue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, visibilityTimeout, 1)
+		PollMessages(ctx, 0, visibilityTimeout, 1, 1)
 
 	require.NoError(t, err)
 	assert.Len(t, polledMessages, 1)
@@ -458,7 +459,7 @@ func TestVisibilityTimeoutEffectiveness(t *testing.T) {
 	// Try polling with consumer2 immediately, should not receive the message due to visibility timeout
 	polledMessages2, err := queue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, visibilityTimeout, 1)
+		PollMessages(ctx, 0, visibilityTimeout, 1, 1)
 
 	require.NoError(t, err)
 	assert.Len(t, polledMessages2, 0)
@@ -469,7 +470,7 @@ func TestVisibilityTimeoutEffectiveness(t *testing.T) {
 	// Now, consumer2 should be able to poll the message
 	polledMessages2, err = queue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, visibilityTimeout, 1)
+		PollMessages(ctx, 0, visibilityTimeout, 1, 1)
 
 	require.NoError(t, err)
 	assert.Len(t, polledMessages2, 1)
@@ -499,7 +500,7 @@ func TestVisibilityTimeoutRecovery(t *testing.T) {
 	// Poll the message but do not delete it
 	polledMessages, err := queue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, visibilityTimeout, 1)
+		PollMessages(ctx, 0, visibilityTimeout, 1, 1)
 
 	require.NoError(t, err)
 	assert.Len(t, polledMessages, 1)
@@ -507,7 +508,7 @@ func TestVisibilityTimeoutRecovery(t *testing.T) {
 	// Poll immediately again. This time, no message should be retrieved because of the visibility timeout.
 	polledMessages, err = queue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, visibilityTimeout, 1)
+		PollMessages(ctx, 0, visibilityTimeout, 1, 1)
 
 	require.NoError(t, err)
 	assert.Len(t, polledMessages, 0)
@@ -518,7 +519,7 @@ func TestVisibilityTimeoutRecovery(t *testing.T) {
 	// Poll again. This time, the previously fetched message should be retrieved.
 	polledMessages, err = queue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, visibilityTimeout, 1)
+		PollMessages(ctx, 0, visibilityTimeout, 1, 1)
 
 	require.NoError(t, err)
 	assert.Len(t, polledMessages, 1)
@@ -552,7 +553,7 @@ func TestPurgeFunctionality(t *testing.T) {
 	// Poll a few messages to hide them using visibility timeout
 	_, err := queue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, visibilityTimeout, 10)
+		PollMessages(ctx, 0, visibilityTimeout, 10, 10)
 
 	require.NoError(t, err)
 
@@ -564,7 +565,7 @@ func TestPurgeFunctionality(t *testing.T) {
 	// Attempt to poll messages
 	messagesAfterPurge, err := queue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, 0, totalMessages)
+		PollMessages(ctx, 0, 0, totalMessages, totalMessages)
 
 	require.NoError(t, err)
 
@@ -630,13 +631,13 @@ func TestVisibilityTimeoutRespect(t *testing.T) {
 	// Poll the message with a visibility timeout
 	polledMsgs, err := queue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, visibilityTimeout, 1)
+		PollMessages(ctx, 0, visibilityTimeout, 1, 1)
 
 	require.NoError(t, err)
 	assert.Len(t, polledMsgs, 1)
 
 	// Try polling immediately; the message should not be visible
-	polledMsgs, err = queue.UseQueueName(queueName).UseClientID(clientID).PollMessages(ctx, 0, 0, 1)
+	polledMsgs, err = queue.UseQueueName(queueName).UseClientID(clientID).PollMessages(ctx, 0, 0, 1, 1)
 
 	require.NoError(t, err)
 	assert.Empty(t, polledMsgs)
@@ -645,7 +646,7 @@ func TestVisibilityTimeoutRespect(t *testing.T) {
 	time.Sleep(visibilityTimeout + 1*time.Second)
 
 	// Try polling after sleeping; the message should now be visible
-	polledMsgs, err = queue.UseQueueName(queueName).UseClientID(clientID).PollMessages(ctx, 0, 0, 1)
+	polledMsgs, err = queue.UseQueueName(queueName).UseClientID(clientID).PollMessages(ctx, 0, 0, 1, 1)
 
 	require.NoError(t, err)
 	assert.Len(t, polledMsgs, 1)
@@ -693,7 +694,7 @@ func TestConcurrentWritersIntegrity(t *testing.T) {
 	// Poll all messages and verify their count
 	allMessages, err := queue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, time.Minute, numWriters*messagesPerWriter)
+		PollMessages(ctx, 0, time.Minute, numWriters*messagesPerWriter, numWriters*messagesPerWriter)
 
 	require.NoError(t, err)
 	assert.Len(t, allMessages, numWriters*messagesPerWriter)
@@ -749,6 +750,7 @@ func TestVisibilityTimeoutUnderLoad(t *testing.T) {
 				ctx,
 				time.Second*25, /* give it a little space to get message*/
 				visibilityTimeout,
+				20,
 				20,
 			)
 
@@ -835,7 +837,7 @@ func TestContinuousWriteAndReadWithNoDuplicates(t *testing.T) {
 				// Consume
 				msgs, err := queue.UseQueueName(queueName).
 					UseClientID(clientID).
-					PollMessages(ctx, 0, time.Minute*5, 10)
+					PollMessages(ctx, 0, time.Minute*5, 10, 10)
 
 				require.NoError(t, err)
 
