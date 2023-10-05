@@ -36,8 +36,8 @@ const (
 	AttrSentTimestamp = "SentTimestamp"
 )
 
-const PartitionKeySeparator = "+-+"
-const RecipientHandleSeparator = "#"
+const PartitionKeySeparator = "|"
+const RecipientHandleSeparator = "&"
 
 const (
 	TableNameNotSet = "table name not set"
