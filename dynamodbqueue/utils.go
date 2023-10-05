@@ -34,15 +34,15 @@ func getDynamoDbAttributeNumber(
 // isValidClientID will check if the clientID is valid.
 func isValidClientID(clientID string) bool {
 	return len(clientID) > 0 && len(clientID) <= 64 &&
-		!strings.Contains(clientID, "#") &&
-		!strings.Contains(clientID, "-")
+		!strings.Contains(clientID, RecipientHandleSeparator) &&
+		!strings.Contains(clientID, PartitionKeySeparator)
 }
 
 // isValidQueueName will check if the queueName is valid.
 func isValidQueueName(queueName string) bool {
 	return len(queueName) > 0 && len(queueName) <= 64 &&
-		!strings.Contains(queueName, "#") &&
-		!strings.Contains(queueName, "-")
+		!strings.Contains(queueName, RecipientHandleSeparator) &&
+		!strings.Contains(queueName, PartitionKeySeparator)
 }
 
 // decodeRecipientHandle will parse the recipient handle on the format: "pk#sk#hidden_until#owner"

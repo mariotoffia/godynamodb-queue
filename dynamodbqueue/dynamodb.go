@@ -37,6 +37,7 @@ const (
 )
 
 const PartitionKeySeparator = "+-+"
+const RecipientHandleSeparator = "#"
 
 const (
 	TableNameNotSet = "table name not set"
@@ -333,12 +334,15 @@ func (dq *DynamoDBQueue) PollMessages(
 				return nil, err
 			}
 
-			// PK#SK#hidden_until#owner
+			// SEP=RecipientHandleSeparator
+			// PK{SEP}SK{SEP}hidden_until{SEP}owner
 			msg.ReceiptHandle = fmt.Sprintf(
-				"%s#%d#%s",
-				// it is already PK#SK
+				"%s%s%d%s%s",
+				// it is already PK{SEP}SK
 				msg.MessageId,
+				RecipientHandleSeparator,
 				visibility_timeout,
+				RecipientHandleSeparator,
 				dq.clientID,
 			)
 
@@ -404,7 +408,7 @@ func (dq *DynamoDBQueue) PushMessages(
 		sk := fmt.Sprintf("%d-%s", time.Now().UnixNano(), RandomString(dq.randomDigits))
 
 		// Must be unique (otherwise we have overwritten a message and thus this is now the message...)
-		msg.MessageId = fmt.Sprintf("%s#%s", dq.PartitionKey(), sk)
+		msg.MessageId = fmt.Sprintf("%s%s%s", dq.PartitionKey(), RecipientHandleSeparator, sk)
 
 		// Put required attributes
 		if msg.Attributes == nil {
