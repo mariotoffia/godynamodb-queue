@@ -3,6 +3,7 @@ package dynamodbqueue
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -111,6 +112,8 @@ type DynamoDBQueue struct {
 	// queueType is the type of queue to use. This affects the sorting of messages.
 	// FIFO is the default.
 	queueType QueueType
+	// logging when set to `true` will log operations.
+	logging bool
 }
 
 // New creates a new `DynamoDBQueue` instance.
@@ -132,6 +135,16 @@ func (dq *DynamoDBQueue) UseTable(table string) *DynamoDBQueue {
 	dq.table = table
 
 	return dq
+}
+
+// SetLogging will enable/disable logging.
+func (dq *DynamoDBQueue) SetLogging(enabled bool) {
+	dq.logging = enabled
+}
+
+// Logging returns `true` if logging is enabled.
+func (dq *DynamoDBQueue) Logging() bool {
+	return dq.logging
 }
 
 // UseClientID will change the clientID for the queue.
@@ -279,6 +292,10 @@ func (dq *DynamoDBQueue) PollMessages(
 			return nil, err
 		}
 
+		if dq.logging {
+			log.Printf("found %d messages", len(resp.Items))
+		}
+
 		// Extract messages and add to results
 		for _, item := range resp.Items {
 			// Lock message
@@ -325,6 +342,12 @@ func (dq *DynamoDBQueue) PollMessages(
 
 			if err != nil {
 				// Failed, just skip the message
+				if dq.logging {
+					log.Printf(
+						"failed to acquire message: PK: %s, SK: %v Owner: %s",
+						dq.PartitionKey(), item[ColumnSK], dq.clientID)
+				}
+
 				continue
 			}
 
@@ -494,6 +517,13 @@ func (dq *DynamoDBQueue) DeleteMessages(
 
 	for _, receiptHandle := range receiptHandles {
 		pk, sk, hidden_until, owner := decodeRecipientHandle(receiptHandle)
+
+		if dq.logging {
+			log.Printf(
+				"deleting message: PK: %s, SK: %s, hidden_until: %d, owner: %s",
+				pk, sk, hidden_until, owner,
+			)
+		}
 
 		if pk == "" || hidden_until == -1 {
 			// Invalid receipt handle

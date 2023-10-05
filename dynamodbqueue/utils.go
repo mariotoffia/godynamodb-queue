@@ -45,13 +45,15 @@ func isValidQueueName(queueName string) bool {
 		!strings.Contains(queueName, PartitionKeySeparator)
 }
 
-// decodeRecipientHandle will parse the recipient handle on the format: "pk#sk#hidden_until#owner"
+// decodeRecipientHandle will parse the recipient handle on the format:
+// SEP={RecipientHandleSeparator}
+// "pk{SEP}sk{SEP}hidden_until{SEP}owner"
 //
 // If it fails, it will return empty strings.
 func decodeRecipientHandle(
 	recipientHandle string,
 ) (pk, sk string, hidden_until int64, owner string) {
-	parts := strings.Split(recipientHandle, "#")
+	parts := strings.Split(recipientHandle, RecipientHandleSeparator)
 
 	if len(parts) != 4 {
 		return "", "", -1, ""
