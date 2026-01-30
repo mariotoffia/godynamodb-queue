@@ -1,7 +1,6 @@
 package dynamodbqueue
 
 import (
-	"context"
 	"crypto/rand"
 	"fmt"
 	"math/big"
@@ -12,44 +11,60 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
-// getDynamoDbAttributeNumber will try to extract the _id_ dynamodb `types.AttributeValue` and see if it is
-// a number. If it is, it will return the number, otherwise it will return an error.
+// getDynamoDbAttributeNumber extracts a number attribute from a DynamoDB item.
 func getDynamoDbAttributeNumber(
-	ctx context.Context,
 	id string,
 	attrs map[string]types.AttributeValue,
 ) (int64, error) {
-	if val, ok := attrs["hidden_until"].(*types.AttributeValueMemberN); ok {
+	attr, ok := attrs[id]
+	if !ok {
+		return 0, fmt.Errorf("%s attribute not found", id)
+	}
+
+	if val, ok := attr.(*types.AttributeValueMemberN); ok {
 		hu, err := strconv.ParseInt(val.Value, 10, 64)
 		if err != nil {
-			// Handle the error
-			panic(err)
+			return 0, fmt.Errorf("failed to parse %s: %w", id, err)
 		}
 		return hu, nil
-	} else {
-		return 0, fmt.Errorf("hidden_until is not a number")
 	}
+
+	return 0, fmt.Errorf("%s is not a number", id)
 }
 
-// isValidClientID will check if the clientID is valid.
+// getSKValue extracts the SK (sort key) string value from the item attributes.
+func getSKValue(attrs map[string]types.AttributeValue) (string, error) {
+	skAttr, ok := attrs["SK"]
+	if !ok {
+		return "", fmt.Errorf("SK attribute not found")
+	}
+
+	if val, ok := skAttr.(*types.AttributeValueMemberS); ok {
+		return val.Value, nil
+	}
+
+	return "", fmt.Errorf("SK is not a string")
+}
+
+// isValidClientID checks if the clientID is valid.
 func isValidClientID(clientID string) bool {
 	return len(clientID) > 0 && len(clientID) <= 64 &&
 		!strings.Contains(clientID, RecipientHandleSeparator) &&
 		!strings.Contains(clientID, PartitionKeySeparator)
 }
 
-// isValidQueueName will check if the queueName is valid.
+// isValidQueueName checks if the queueName is valid.
 func isValidQueueName(queueName string) bool {
 	return len(queueName) > 0 && len(queueName) <= 64 &&
 		!strings.Contains(queueName, RecipientHandleSeparator) &&
 		!strings.Contains(queueName, PartitionKeySeparator)
 }
 
-// decodeRecipientHandle will parse the recipient handle on the format:
+// decodeRecipientHandle parses the recipient handle on the format:
 // SEP={RecipientHandleSeparator}
 // "pk{SEP}sk{SEP}hidden_until{SEP}owner"
 //
-// If it fails, it will return empty strings.
+// If it fails, it returns empty strings and -1 for hidden_until.
 func decodeRecipientHandle(
 	recipientHandle string,
 ) (pk, sk string, hidden_until int64, owner string) {
@@ -64,24 +79,7 @@ func decodeRecipientHandle(
 	return parts[0], parts[1], hidden_until, parts[3]
 }
 
-// validateOperation will make sure the table, queueName and clientID is set.
-func (dq *DynamoDBQueue) validateOperation(ctx context.Context) error {
-	//
-	if dq.table == "" {
-		return fmt.Errorf(TableNameNotSet)
-	}
-
-	if dq.queueName == "" {
-		return fmt.Errorf(QueueNameNotSet)
-	}
-
-	if dq.clientID == "" {
-		return fmt.Errorf(ClientIDNotSet)
-	}
-
-	return nil
-}
-
+// ToBatches splits a slice into batches of the specified size.
 func ToBatches[T any](items []T, batchSize int) [][]T {
 	if len(items) == 0 {
 		return nil
@@ -114,7 +112,7 @@ func ToBatches[T any](items []T, batchSize int) [][]T {
 	return batches
 }
 
-// ToReceiptHandles will extract the receipt handles from the SQS messages.
+// ToReceiptHandles extracts the receipt handles from the SQS messages.
 func ToReceiptHandles(msgs []events.SQSMessage) []string {
 	if len(msgs) == 0 {
 		return nil
@@ -128,6 +126,8 @@ func ToReceiptHandles(msgs []events.SQSMessage) []string {
 
 	return receiptHandles
 }
+
+// RandomString generates a random alphanumeric string of length n.
 func RandomString(n int) string {
 	var letters = []rune("abcdefghijklmnopqrstuvwxyz0123456789")
 
@@ -139,6 +139,7 @@ func RandomString(n int) string {
 	return string(s)
 }
 
+// RandomInt generates a random integer in the range [min, max).
 func RandomInt(min, max int) int {
 	idx, err := rand.Int(rand.Reader, big.NewInt(int64(max-min)))
 	if err != nil {
@@ -148,7 +149,7 @@ func RandomInt(min, max int) int {
 	return int(idx.Int64()) + min
 }
 
-// RandomPostfix postfixes the in param name with an random integer
+// RandomPostfix postfixes the name with a random string.
 func RandomPostfix(name string) string {
 	return fmt.Sprintf("%s-%s", name, RandomString(6))
 }

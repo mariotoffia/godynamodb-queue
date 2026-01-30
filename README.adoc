@@ -6,6 +6,7 @@
 :toc:
 :toc-title: Table of Contents
 :toclevels: 3
+:sectnums:
 :homepage: github.com/mariotoffia/godynamodb-queue
 :stem: latexmath
 :doctype: book
@@ -25,27 +26,37 @@
 
 == Introduction
 
-This is a flexible queue, using DynamoDB as backend. This supports both a _QueueName_ and one to many _ClientID_s hence, it is possible to have multiple isolated clients under the same _QueueName_.
-By default, the queue is set into _FIFO_ mode, but may be altered at runtime to _LIFO_.
+A flexible message queue library using DynamoDB as the backend. Features:
 
-Since multiple `DynamoDbQueue`/processes can simultaneously read/write/delete from the queue it will use a `visibilityTimeout` to ensure that only one consumer can process a message at a time.
+* *Two queue modes*: Standard (best-effort ordering) and FIFO (strict ordering with message groups)
+* *Multi-tenant support*: Isolated queues via `QueueName` and `ClientID` combinations
+* *Concurrent consumers*: Safe for multiple processes/goroutines with visibility timeout locking
+* *Message groups* (FIFO): Strict ordering within groups, parallel processing across groups
+* *Automatic redelivery*: Unacknowledged messages become visible after timeout
+* *TTL support*: Automatic message expiration via DynamoDB TTL
 
-The DynamoDB Table have the following schema:
+The DynamoDB Table has the following schema:
 
-[cols="1,1,1,1,1,1", options="header"]
+[cols="1,1,1,1,1,1,1", options="header"]
 |===
-|PK |SK |hidden_until |owner |TTL |event
+|PK |SK |hidden_until |owner |message_group |TTL |event
 
-|queueName-clientID 
-|`{unix-64-bit-timestamp (nanoseconds) + "_" + random_string}`
+|`queueName\|clientID`
+|`{timestamp_ns}&{random_digits}`
 |`{now()+visibilityTimeout}`
-|owner 
-|ttl 
-|`{events.SQSMessage}``
+|`{clientID}`
+|`{group}` (FIFO only)
+|`{ttl}`
+|`{events.SQSMessage}`
 |===
 
-When the query is commenced, it will query for all messages within PK (oldest first) and that
-now() is greater than hidden_until.
+* *PK*: Partition key combining queue name and client ID
+* *SK*: Sort key with nanosecond timestamp and random suffix for uniqueness
+* *hidden_until*: Timestamp until which the message is invisible (visibility timeout)
+* *message_group*: (FIFO only) Groups messages for ordered delivery
+* *TTL*: DynamoDB TTL for automatic message expiration
+
+When polling, messages are queried by PK (oldest first) where `hidden_until < now()`.
 
 NOTE: The DynamoDB table must be configured with the TTL option on the TTL column in order for it to
 be deleted automatically.
@@ -56,56 +67,234 @@ It has convenience functions to create tables with proper configuration in runti
 [source,go]
 ----
 ctx := context.Background()
-config, _ := awsconfig.LoadDefaultConfig(ctx)
+cfg, _ := config.LoadDefaultConfig(ctx)
 
-created, _ := dynamodbqueue.NewDynamoDBQueue(ctx, cfg, 0).
-  UseTable("queue-table").
-  CreateQueueTable(ctx)
+created, _ := dynamodbqueue.New(cfg, 0, dynamodbqueue.QueueStandard).
+    UseTable("queue-table").
+    CreateQueueTable(ctx)
 ----
 
-== Sample Usage
-
-It is very flexible to use, you may modify the `DynamoDbQueue` at runtime to change the mode of operation, queue, client, visibility timeout and so on. It is even possible to change the TTL for the message to live at runtime.
+== Quick Start
 
 .Simple Example
 [source,go]
 ----
 ctx := context.Background()
-config, _ := awsconfig.LoadDefaultConfig(ctx)
+cfg, _ := config.LoadDefaultConfig(ctx)
 
-queue := dynamodbqueue.NewDynamoDBQueue(ctx, cfg, 0). <1>
-  UseQueueName("testQueue").
-  UseClientID("testClientId")
+queue := dynamodbqueue.New(cfg, 0, dynamodbqueue.QueueStandard). // <1>
+    UseTable("my-queue-table").
+    UseQueueName("testQueue").
+    UseClientID("testClientId")
 
-msgs, _ := queue.PushMessages(ctx, 0 /*defaultTTL*/, events.SQSMessage{ // <2>
-  MessageAttributes: map[string]events.SQSMessageAttribute{
-    "test2": { DataType: "String", StringValue: aws.String("test2") },
-  },
-  Body: "test body",
+// Push messages to the queue
+msgs, _ := queue.PushMessages(ctx, 0, events.SQSMessage{ // <2>
+    MessageAttributes: map[string]events.SQSMessageAttribute{
+        "priority": {DataType: "String", StringValue: aws.String("high")},
+    },
+    Body: "test body",
 })
 
 // Check the number of messages in the queue
 count, _ := queue.Count(ctx)
 
-// Poll max 10 messages (return as fast as possible)
+// Poll messages (minMessages=1, maxMessages=10)
 msgs, _ = queue.PollMessages( // <3>
-  ctx,
-  0,              /*noTimeout*/
-  time.Minute*14, /*visibilityTimeout*/
-  10,             /*maxMessages*/
+    ctx,
+    time.Second*5,  // timeout - keep polling until min messages or timeout
+    time.Minute*14, // visibilityTimeout - how long to "own" messages
+    1,              // minMessages
+    10,             // maxMessages
 )
 
-// Use the messages and then delete them
-queue.DeleteMessages(ctx, ToReceiptHandles(msgs)...) // <4>
+// Process and delete messages
+for _, msg := range msgs {
+    // Process the message...
+    queue.DeleteMessages(ctx, msg.ReceiptHandle) // <4>
+}
 ----
-<1> Create a queue manager with queueName and clientID.
+<1> Create a queue with Standard mode (use `QueueFIFO` for strict ordering)
 <2> Push one or more messages to the queue
-<3> Poll for messages, max 10 messages and exit as fast as possible. "Own" the messages for 14 minutes.
-<4> Since owner, it is possible to delete the messages using the receipt handles.
+<3> Poll for messages with timeout and visibility settings
+<4> Delete messages after successful processing
 
-When the timeout is set to a positive value, it will continuously try to get maxMessages before exiting the loop.
+When `timeout` is positive, the poll continues until `minMessages` are received or timeout expires. The `visibilityTimeout` determines how long messages are hidden from other consumers.
 
-When pulling the messages, it uses DynamoDBs ability to set a criteria before setting ownership of message, therefore it is safe for different clients, and processes to use this queue simoulatinously.
+TIP: Use FIFO mode with message groups when you need strict ordering guarantees within a logical partition (e.g., per customer, per order).
+
+== Queue Types
+
+This library supports two queue types: *Standard* and *FIFO*.
+
+=== Standard Queue
+
+Standard queues provide best-effort ordering and at-least-once delivery. Messages are delivered in approximately the order they were sent, but strict ordering is not guaranteed.
+
+.Standard Queue Example
+[source,go]
+----
+ctx := context.Background()
+cfg, _ := config.LoadDefaultConfig(ctx)
+
+// Create a standard queue (default)
+queue := dynamodbqueue.New(cfg, 0, dynamodbqueue.QueueStandard).
+    UseTable("my-queue-table").
+    UseQueueName("orders").
+    UseClientID("processor-1")
+
+// Push messages
+queue.PushMessages(ctx, 0, events.SQSMessage{
+    Body: `{"orderId": "12345", "amount": 99.99}`,
+})
+
+// Poll messages (up to 10, with 5-minute visibility timeout)
+msgs, _ := queue.PollMessages(ctx, time.Second*5, time.Minute*5, 1, 10)
+
+// Process and delete
+for _, msg := range msgs {
+    // Process message...
+    queue.DeleteMessages(ctx, msg.ReceiptHandle)
+}
+----
+
+=== FIFO Queue
+
+FIFO queues guarantee strict ordering within message groups. Key properties:
+
+* *Exactly one message in-flight per group* - While a message from group "A" is being processed, no other messages from group "A" can be delivered
+* *Strict ordering* - Messages within a group are always delivered in the order they were sent
+* *Parallel processing across groups* - Different groups can be processed concurrently
+
+.FIFO Queue with Message Groups
+[source,go]
+----
+ctx := context.Background()
+cfg, _ := config.LoadDefaultConfig(ctx)
+
+// Create a FIFO queue
+queue := dynamodbqueue.New(cfg, 0, dynamodbqueue.QueueFIFO).
+    UseTable("my-queue-table").
+    UseQueueName("orders").
+    UseClientID("processor-1")
+
+// Cast to FifoQueue to access group-specific methods
+fifo := queue.(dynamodbqueue.FifoQueue)
+
+// Push messages to specific groups (e.g., by customer ID)
+fifo.PushMessagesWithGroup(ctx, 0, "customer-123", events.SQSMessage{
+    Body: `{"orderId": "A1", "action": "create"}`,
+})
+fifo.PushMessagesWithGroup(ctx, 0, "customer-123", events.SQSMessage{
+    Body: `{"orderId": "A1", "action": "update"}`,
+})
+fifo.PushMessagesWithGroup(ctx, 0, "customer-456", events.SQSMessage{
+    Body: `{"orderId": "B1", "action": "create"}`,
+})
+
+// Poll messages from multiple groups (up to 3 groups at once)
+// Returns at most one message per group to maintain FIFO ordering
+msgs, _ := fifo.PollMessages(ctx, time.Second*5, time.Minute*5, 1, 3)
+
+// Process and delete - other messages in same group remain blocked
+for _, msg := range msgs {
+    // Process message...
+    fifo.DeleteMessages(ctx, msg.ReceiptHandle)
+    // Now the next message in this group becomes available
+}
+----
+
+.FIFO Ordering Guarantee
+[source,go]
+----
+// Messages pushed to the same group are ALWAYS delivered in order
+fifo.PushMessagesWithGroup(ctx, 0, "user-1", events.SQSMessage{Body: "msg-1"})
+fifo.PushMessagesWithGroup(ctx, 0, "user-1", events.SQSMessage{Body: "msg-2"})
+fifo.PushMessagesWithGroup(ctx, 0, "user-1", events.SQSMessage{Body: "msg-3"})
+
+// Even with multiple concurrent consumers, messages are delivered:
+// msg-1 first, then msg-2, then msg-3
+// This is guaranteed regardless of the number of consumers
+----
+
+== Concurrent Consumers
+
+Multiple consumers can safely process the queue simultaneously.
+
+.Multiple Consumers Example
+[source,go]
+----
+// Start multiple consumers in goroutines
+for i := 0; i < 5; i++ {
+    go func(consumerID int) {
+        queue := dynamodbqueue.New(cfg, 0, dynamodbqueue.QueueFIFO).
+            UseTable("my-queue-table").
+            UseQueueName("orders").
+            UseClientID(fmt.Sprintf("consumer-%d", consumerID))
+
+        fifo := queue.(dynamodbqueue.FifoQueue)
+
+        for {
+            msgs, err := fifo.PollMessages(ctx, time.Second, time.Minute*5, 1, 10)
+            if err != nil || len(msgs) == 0 {
+                continue
+            }
+
+            for _, msg := range msgs {
+                processMessage(msg)
+                fifo.DeleteMessages(ctx, msg.ReceiptHandle)
+            }
+        }
+    }(i)
+}
+----
+
+== Visibility Timeout and Redelivery
+
+Messages become invisible to other consumers during processing. If not deleted within the visibility timeout, they are automatically redelivered.
+
+.Visibility Timeout Example
+[source,go]
+----
+// Poll with 30-second visibility timeout
+msgs, _ := queue.PollMessages(ctx, 0, time.Second*30, 1, 10)
+
+// If processing takes longer than 30 seconds without deleting,
+// the message becomes visible again and can be picked up by another consumer
+
+// Always delete after successful processing
+for _, msg := range msgs {
+    if err := processMessage(msg); err == nil {
+        queue.DeleteMessages(ctx, msg.ReceiptHandle)
+    }
+    // If processing fails, don't delete - message will be redelivered
+}
+----
+
+== Table Management
+
+.Create and Drop Tables
+[source,go]
+----
+ctx := context.Background()
+cfg, _ := config.LoadDefaultConfig(ctx)
+
+queue := dynamodbqueue.New(cfg, time.Hour*24, dynamodbqueue.QueueStandard). // 24h default TTL
+    UseTable("my-queue-table").
+    UseQueueName("orders").
+    UseClientID("admin")
+
+// Create table (returns true if created, false if already exists)
+created, err := queue.CreateQueueTable(ctx)
+
+// Check if table exists
+exists := queue.TableExists(ctx)
+
+// Purge all messages from this queue/client combination
+queue.Purge(ctx)
+
+// Drop the entire table
+queue.DropQueueTable(ctx)
+----
 
 == The Idea
 
