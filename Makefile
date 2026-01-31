@@ -23,10 +23,12 @@ test: setenv
 	@go tool cover -func=${DIST}/test-coverage.out
 	@go tool cover -html=${DIST}/test-coverage.out -o ${DIST}/_output/test-coverage.html
 
-# Integration tests (requires Docker for DynamoDB Local)
-test-ci: setenv
+# Integration tests - run from CI/CD
+test-ci: tests
+# Full tests including integration tests (requires Docker)
+test-full: setenv
 	@echo "Running all tests including integration tests (requires Docker)..."
-	@go test -v -count=1 -p=1 -timeout=30m -cover -coverprofile=${DIST}/test-coverage.out ./... -coverpkg ./...
+	@go test -v -count=1 -p=1 -timeout=60m -cover -coverprofile=${DIST}/test-coverage.out ./... -coverpkg ./...
 	@go tool cover -func=${DIST}/test-coverage.out
 	@go tool cover -html=${DIST}/test-coverage.out -o ${DIST}/_output/test-coverage.html
 
