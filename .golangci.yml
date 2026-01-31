@@ -1,0 +1,238 @@
+# golangci-lint v2 configuration with all linters enabled
+# https://golangci-lint.run/docs/configuration/
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+output:
+  formats:
+    colored-line-number: {}
+  print-issued-lines: true
+  print-linter-name: true
+  sort-results: true
+
+linters:
+  default: all
+  disable:
+    # Deprecated linters
+    - wsl  # deprecated, use wsl_v5
+
+    # Intentionally disabled
+    - exhaustruct      # Impractical for AWS SDK structs with many optional fields
+    - gochecknoglobals # No global variables (we use them intentionally)
+    - varnamelen       # Flags idiomatic Go names (pk, sk, wg, tt, bq)
+    - ireturn          # Interface returns are intentional for factory/builder pattern
+    - wrapcheck        # AWS SDK errors already have sufficient context
+    - nlreturn         # Stylistic - blank lines before returns
+    - wsl_v5           # Too strict whitespace rules
+    - paralleltest     # Integration tests share DynamoDB state, must run sequentially
+    - testpackage      # Tests need access to unexported functions (white-box testing)
+    - depguard         # Needs explicit allow-list config for each dependency
+    - nonamedreturns   # Conflicts with gocritic for multi-return functions
+    - noinlineerr      # Inline error handling is idiomatic Go
+    - godot            # Comments ending in periods (stylistic, too strict for separator lines)
+    - mnd              # Magic numbers are contextually meaningful (timeouts, jitter, formats)
+    - intrange         # Migrating all for loops would be extensive with minimal benefit
+    - perfsprint       # Micro-optimization; fmt.Sprintf is more readable for name construction
+    - forbidigo        # Forbids identifiers (needs config)
+    - funcorder        # Function ordering (style preference)
+    - thelper          # Test helper functions (too strict)
+    - testifylint      # Testify linting (too opinionated)
+    - exhaustive       # Exhaustive enum switches (too strict)
+    - gocognit         # Cognitive complexity (too noisy for existing code)
+    - nilnil           # Valid pattern: nil,nil means "no results found, no error"
+    - noctx            # HTTP without context (not applicable)
+    - godoclint        # Doc lint (too strict)
+    - interfacebloat   # Interface size (Queue interface is intentionally large)
+    - lll              # Line length (handled by formatting)
+    - modernize        # Modern Go features (creates too much churn)
+
+    # Framework-specific (not used in this project)
+    - arangolint       # ArangoDB specific
+    - ginkgolinter     # Ginkgo testing framework
+    - zerologlint      # Zerolog specific
+    - protogetter      # Protobuf specific
+    - promlinter       # Prometheus specific
+    - spancheck        # OpenTelemetry specific
+    - loggercheck      # Specific logger libraries
+    - sloglint         # slog specific (we don't use slog)
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+
+    govet:
+      enable-all: true
+
+    staticcheck:
+      checks:
+        - all
+
+    gosec:
+      excludes:
+        - G104  # Audit errors not checked (handled by errcheck)
+        - G304  # File path provided as taint input (acceptable in tests)
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+
+    gocyclo:
+      min-complexity: 15
+
+    gocognit:
+      min-complexity: 20
+
+    cyclop:
+      max-complexity: 15
+
+    funlen:
+      lines: 100
+      statements: 50
+
+    lll:
+      line-length: 140
+      tab-width: 4
+
+    misspell:
+      locale: US
+
+    nakedret:
+      max-func-lines: 30
+
+    nestif:
+      min-complexity: 4
+
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: false
+
+    revive:
+      severity: warning
+      rules:
+        - name: blank-imports
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+        - name: increment-decrement
+        - name: var-declaration
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unreachable-code
+        # Disabled rules:
+        # - name: context-as-argument  # Internal functions have different conventions
+        # - name: var-naming           # Too strict for existing code
+        # - name: unused-parameter     # Handled at test level
+        # - name: redefines-builtin-id # Too strict (min/max)
+
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+
+    godot:
+      scope: declarations
+      period: true
+      capital: false
+
+    mnd:
+      checks:
+        - argument
+        - case
+        - condition
+        - return
+      ignored-numbers:
+        - "0"
+        - "1"
+        - "2"
+        - "10"
+        - "25"   # DynamoDB batch size
+        - "100"
+        - "1000"
+
+    testifylint:
+      enable-all: true
+
+    interfacebloat:
+      max: 10
+
+    maintidx:
+      under: 20
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      # Exclude some linters from running on tests files
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - gocognit
+          - cyclop
+          - funlen
+          - dupl
+          - gosec
+          - err113
+          - forcetypeassert
+          - mnd
+          - maintidx
+          - errcheck     # Tests often intentionally ignore errors
+          - errchkjson
+          - unparam
+          - govet        # Shadow warnings in tests are often acceptable
+          - gocritic     # rangeValCopy and other micro-optimizations less critical in tests
+          - wastedassign # Test code often has intentional reassignments for clarity
+
+      # Exclude lll for long strings and comments
+      - linters:
+          - lll
+        source: "^//|`.*`"
+
+      # Allow fmt.Errorf in main packages
+      - path: cmd/
+        linters:
+          - err113
+
+      # Exclude dupword for example comments in facade.go
+      - path: facade\.go
+        linters:
+          - dupword
+
+      # testutil is test infrastructure - relax some checks
+      - path: testutil/
+        linters:
+          - err113
+
+    paths:
+      - vendor
+      - .git
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 10
+  new: false
+
+severity:
+  default: error
+  case-sensitive: false

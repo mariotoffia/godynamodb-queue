@@ -14,22 +14,22 @@ import (
 )
 
 // listInternal returns all queues that exist in the system.
-func listInternal(bq *baseQueue, ctx context.Context) ([]QueueAndClientId, error) {
+func listInternal(bq *baseQueue, ctx context.Context) ([]QueueAndClientID, error) {
 	if bq.table == "" {
-		return nil, fmt.Errorf(TableNameNotSet)
+		return nil, ErrTableNameNotSet
 	}
 
 	var lastEvaluatedKey map[string]types.AttributeValue
 
 	seen := make(map[string]bool)
-	all := make([]QueueAndClientId, 0)
+	all := make([]QueueAndClientID, 0)
 
 	expr, err := expression.NewBuilder().
 		WithProjection(expression.NamesList(expression.Name(ColumnPK))).
 		Build()
 
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("%w: %w", ErrExpressionBuild, err)
 	}
 
 	for {
@@ -62,7 +62,7 @@ func listInternal(bq *baseQueue, ctx context.Context) ([]QueueAndClientId, error
 				parts := strings.Split(pk, PartitionKeySeparator)
 
 				if len(parts) == 2 {
-					all = append(all, QueueAndClientId{QueueName: parts[0], ClientID: parts[1]})
+					all = append(all, QueueAndClientID{QueueName: parts[0], ClientID: parts[1]})
 				}
 			}
 		}
@@ -91,7 +91,7 @@ func purgeInternal(bq *baseQueue, ctx context.Context) error {
 			Build()
 
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("%w: %w", ErrExpressionBuild, err)
 		}
 
 		resp, err := bq.client.Query(ctx, &dynamodb.QueryInput{
@@ -144,7 +144,7 @@ func purgeInternal(bq *baseQueue, ctx context.Context) error {
 // purgeAllInternal deletes all items from the DynamoDB table.
 func purgeAllInternal(bq *baseQueue, ctx context.Context) error {
 	if bq.table == "" {
-		return fmt.Errorf(TableNameNotSet)
+		return ErrTableNameNotSet
 	}
 
 	var lastEvaluatedKey map[string]types.AttributeValue
@@ -194,7 +194,7 @@ func purgeAllInternal(bq *baseQueue, ctx context.Context) error {
 // dropQueueTableInternal drops the DynamoDB table.
 func dropQueueTableInternal(bq *baseQueue, ctx context.Context) error {
 	if bq.table == "" {
-		return fmt.Errorf(TableNameNotSet)
+		return ErrTableNameNotSet
 	}
 
 	_, err := bq.client.DeleteTable(ctx, &dynamodb.DeleteTableInput{
@@ -217,7 +217,7 @@ func tableExistsInternal(bq *baseQueue, ctx context.Context) bool {
 // createQueueTableInternal creates the DynamoDB table for the queue.
 func createQueueTableInternal(bq *baseQueue, ctx context.Context) (bool, error) {
 	if bq.table == "" {
-		return false, fmt.Errorf(TableNameNotSet)
+		return false, ErrTableNameNotSet
 	}
 
 	_, err := bq.client.DescribeTable(
@@ -257,7 +257,7 @@ func createQueueTableInternal(bq *baseQueue, ctx context.Context) (bool, error) 
 			TableName: &bq.table,
 		}
 
-		_, err := bq.client.CreateTable(ctx, input)
+		_, err = bq.client.CreateTable(ctx, input)
 
 		if err != nil {
 			return false, err
@@ -269,7 +269,8 @@ func createQueueTableInternal(bq *baseQueue, ctx context.Context) (bool, error) 
 	}
 
 	for {
-		resp, err := bq.client.DescribeTable(
+		var resp *dynamodb.DescribeTableOutput
+		resp, err = bq.client.DescribeTable(
 			ctx,
 			&dynamodb.DescribeTableInput{TableName: aws.String(bq.table)},
 		)

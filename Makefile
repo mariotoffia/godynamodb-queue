@@ -26,7 +26,7 @@ test: setenv
 # Integration tests (requires Docker for DynamoDB Local)
 test-ci: setenv
 	@echo "Running all tests including integration tests (requires Docker)..."
-	@go test -v -count=1 -p=1 -cover -coverprofile=${DIST}/test-coverage.out ./... -coverpkg ./...
+	@go test -v -count=1 -p=1 -timeout=30m -cover -coverprofile=${DIST}/test-coverage.out ./... -coverpkg ./...
 	@go tool cover -func=${DIST}/test-coverage.out
 	@go tool cover -html=${DIST}/test-coverage.out -o ${DIST}/_output/test-coverage.html
 

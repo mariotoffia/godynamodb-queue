@@ -49,7 +49,7 @@ func runExactlyOnceSimulation(t *testing.T, totalMessages int) {
 	ctx := context.Background()
 
 	queueName := fmt.Sprintf("sim-exact-%s", dynamodbqueue.RandomString(4))
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueStandard).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueStandard).
 		UseTable(tableName).
 		UseQueueName(queueName).
 		UseClientID("sim-client")
@@ -186,7 +186,7 @@ func runMultiConsumerSimulation(t *testing.T, numConsumers, numMessages int) {
 	ctx := context.Background()
 
 	queueName := fmt.Sprintf("sim-race-%s", dynamodbqueue.RandomString(4))
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueStandard).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueStandard).
 		UseTable(tableName).
 		UseQueueName(queueName).
 		UseClientID("race-client")
@@ -295,7 +295,7 @@ func TestSimulation_MultiQueue_Isolation(t *testing.T) {
 
 	queues := make([]dynamodbqueue.Queue, len(queueNames))
 	for i, name := range queueNames {
-		queues[i] = dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueStandard).
+		queues[i] = dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueStandard).
 			UseTable(tableName).
 			UseQueueName(name).
 			UseClientID("iso-client")
@@ -373,7 +373,7 @@ func TestSimulation_BurstTraffic_5000Messages(t *testing.T) {
 	ctx := context.Background()
 
 	queueName := fmt.Sprintf("sim-burst-%s", dynamodbqueue.RandomString(4))
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueStandard).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueStandard).
 		UseTable(tableName).
 		UseQueueName(queueName).
 		UseClientID("burst-client")

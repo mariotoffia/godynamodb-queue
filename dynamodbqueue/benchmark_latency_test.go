@@ -30,7 +30,7 @@ func BenchmarkLatency_PushDistribution(b *testing.B) {
 
 	b.ResetTimer()
 
-	for i := 0; i < iterations; i++ {
+	for range iterations {
 		start := time.Now()
 		_, err := queue.PushMessages(ctx, 0, msg)
 		latency := time.Since(start)
@@ -72,7 +72,7 @@ func BenchmarkLatency_PollDistribution(b *testing.B) {
 
 	b.ResetTimer()
 
-	for i := 0; i < iterations; i++ {
+	for range iterations {
 		start := time.Now()
 		msgs, err := queue.PollMessages(ctx, 0, time.Minute, 1, 1)
 		latency := time.Since(start)
@@ -148,7 +148,7 @@ func benchmarkPollContention(b *testing.B, numConsumers, numMessages int) {
 	var wg sync.WaitGroup
 	wg.Add(numConsumers)
 
-	for c := 0; c < numConsumers; c++ {
+	for range numConsumers {
 		go func() {
 			defer wg.Done()
 
@@ -208,11 +208,11 @@ func BenchmarkLatency_DeleteWithRaces(b *testing.B) {
 
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		b.StopTimer()
 
 		// Push messages
-		for j := 0; j < numMessages; j++ {
+		for j := range numMessages {
 			_, err := queue.PushMessages(ctx, 0, events.SQSMessage{
 				Body: fmt.Sprintf("race-delete-%d-%d", i, j),
 			})
@@ -234,7 +234,7 @@ func BenchmarkLatency_DeleteWithRaces(b *testing.B) {
 		var wg sync.WaitGroup
 		wg.Add(numDeleters)
 
-		for d := 0; d < numDeleters; d++ {
+		for range numDeleters {
 			go func() {
 				defer wg.Done()
 				for _, handle := range handles {
@@ -263,7 +263,7 @@ func BenchmarkLatency_FIFO_SingleGroupPoll(b *testing.B) {
 	const numMessages = 200
 
 	// Push messages to single group
-	for i := 0; i < numMessages; i++ {
+	for i := range numMessages {
 		_, err := fifo.PushMessagesWithGroup(ctx, 0, "group-A", events.SQSMessage{
 			Body: fmt.Sprintf("fifo-latency-%d", i),
 		})
@@ -277,7 +277,7 @@ func BenchmarkLatency_FIFO_SingleGroupPoll(b *testing.B) {
 
 	b.ResetTimer()
 
-	for i := 0; i < numMessages; i++ {
+	for range numMessages {
 		start := time.Now()
 		msgs, err := fifo.PollMessages(ctx, 0, time.Minute, 1, 1)
 		latency := time.Since(start)
@@ -321,7 +321,7 @@ func BenchmarkLatency_FIFO_MultiGroupPoll(b *testing.B) {
 
 	// Push messages to multiple groups
 	for _, group := range groups {
-		for i := 0; i < messagesPerGroup; i++ {
+		for i := range messagesPerGroup {
 			_, err := fifo.PushMessagesWithGroup(ctx, 0, group, events.SQSMessage{
 				Body: fmt.Sprintf("fifo-multi-%s-%d", group, i),
 			})
@@ -336,7 +336,7 @@ func BenchmarkLatency_FIFO_MultiGroupPoll(b *testing.B) {
 
 	b.ResetTimer()
 
-	for i := 0; i < totalMessages; i++ {
+	for range totalMessages {
 		start := time.Now()
 		msgs, err := fifo.PollMessages(ctx, 0, time.Minute, 1, len(groups))
 		latency := time.Since(start)

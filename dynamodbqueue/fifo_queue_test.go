@@ -17,7 +17,7 @@ func TestFifoQueue_SingleGroupOrdering(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a FIFO queue
-	fifoQueue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueFIFO).
+	fifoQueue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueFIFO).
 		UseTable(tableName).
 		UseQueueName("fifoTest-" + dynamodbqueue.RandomString(4)).
 		UseClientID("fifoClient")
@@ -39,7 +39,7 @@ func TestFifoQueue_SingleGroupOrdering(t *testing.T) {
 
 	// Poll messages one at a time
 	var polledBodies []string
-	for i := 0; i < len(messages); i++ {
+	for range messages {
 		// Poll one message
 		polled, err := fq.PollMessages(ctx, 0, time.Second*5, 1, 1)
 		require.NoError(t, err)
@@ -64,7 +64,7 @@ func TestFifoQueue_OneInFlightPerGroup(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a FIFO queue
-	fifoQueue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueFIFO).
+	fifoQueue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueFIFO).
 		UseTable(tableName).
 		UseQueueName("oneInFlight-" + dynamodbqueue.RandomString(4)).
 		UseClientID("oifClient")
@@ -111,7 +111,7 @@ func TestFifoQueue_ParallelProcessingAcrossGroups(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a FIFO queue
-	fifoQueue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueFIFO).
+	fifoQueue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueFIFO).
 		UseTable(tableName).
 		UseQueueName("parallelGroups-" + dynamodbqueue.RandomString(4)).
 		UseClientID("pgClient")
@@ -156,7 +156,7 @@ func TestFifoQueue_DefaultMessageGroup(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a FIFO queue
-	fifoQueue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueFIFO).
+	fifoQueue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueFIFO).
 		UseTable(tableName).
 		UseQueueName("defaultGroup-" + dynamodbqueue.RandomString(4)).
 		UseClientID("dgClient")
@@ -186,7 +186,7 @@ func TestFifoQueue_GroupUnblockedAfterVisibilityExpires(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a FIFO queue
-	fifoQueue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueFIFO).
+	fifoQueue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueFIFO).
 		UseTable(tableName).
 		UseQueueName("visExpire-" + dynamodbqueue.RandomString(4)).
 		UseClientID("veClient")
@@ -229,14 +229,14 @@ func TestFifoQueue_GroupUnblockedAfterVisibilityExpires(t *testing.T) {
 // TestFifoQueue_QueueTypeIdentification verifies queue type identification.
 func TestFifoQueue_QueueTypeIdentification(t *testing.T) {
 	// Standard queue
-	stdQueue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueStandard)
+	stdQueue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueStandard)
 	assert.Equal(t, dynamodbqueue.QueueStandard, stdQueue.Type())
 
 	// FIFO queue
-	fifoQueue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueFIFO)
+	fifoQueue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueFIFO)
 	assert.Equal(t, dynamodbqueue.QueueFIFO, fifoQueue.Type())
 
 	// Default (no type specified) should be Standard
-	defaultQueue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0)
+	defaultQueue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0)
 	assert.Equal(t, dynamodbqueue.QueueStandard, defaultQueue.Type())
 }

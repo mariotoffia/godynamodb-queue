@@ -3,12 +3,9 @@ package dynamodbqueue
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -38,19 +35,15 @@ func (fq *FifoQueueImpl) UseTable(table string) Queue {
 }
 
 // UseQueueName sets the queue name.
+// Validation occurs when queue operations are called.
 func (fq *FifoQueueImpl) UseQueueName(queueName string) Queue {
-	if !isValidQueueName(queueName) {
-		panic("queueName must be set to a valid string")
-	}
 	fq.queueName = queueName
 	return fq
 }
 
 // UseClientID sets the client ID.
+// Validation occurs when queue operations are called.
 func (fq *FifoQueueImpl) UseClientID(clientID string) Queue {
-	if !isValidClientID(clientID) {
-		panic("clientID must be set to a valid string")
-	}
 	fq.clientID = clientID
 	return fq
 }
@@ -93,9 +86,15 @@ func (fq *FifoQueueImpl) PollMessages(
 	var allMessages []events.SQSMessage
 	startTime := time.Now()
 
-	for {
-		if len(allMessages) >= maxMessages {
-			break
+	for len(allMessages) < maxMessages {
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			if len(allMessages) > 0 {
+				return allMessages, nil
+			}
+			return nil, ctx.Err()
+		default:
 		}
 
 		elapsed := time.Since(startTime)
@@ -152,8 +151,9 @@ func (fq *FifoQueueImpl) pollSingleMessage(
 
 	// Group by message_group and find oldest per group
 	groupedMessages := make(map[string][]messageCandidate)
-	for _, msg := range candidates {
-		groupedMessages[msg.messageGroup] = append(groupedMessages[msg.messageGroup], msg)
+	for i := range candidates {
+		msg := &candidates[i]
+		groupedMessages[msg.messageGroup] = append(groupedMessages[msg.messageGroup], *msg)
 	}
 
 	// Try to lock one message from an eligible group
@@ -166,7 +166,7 @@ func (fq *FifoQueueImpl) pollSingleMessage(
 		}
 
 		// Select the oldest message in this group
-		candidate := msgs[0]
+		candidate := &msgs[0]
 
 		// Try to lock it
 		msg, locked := fq.tryLockMessage(ctx, candidate, visibilityTimeout)
@@ -182,7 +182,7 @@ func (fq *FifoQueueImpl) pollSingleMessage(
 // tryLockMessage attempts to lock a single message with FIFO verification.
 func (fq *FifoQueueImpl) tryLockMessage(
 	ctx context.Context,
-	c messageCandidate,
+	c *messageCandidate,
 	visibilityTimeout time.Duration,
 ) (*events.SQSMessage, bool) {
 	lockTime := time.Now().UnixMilli()
@@ -238,7 +238,7 @@ func (fq *FifoQueueImpl) tryLockMessage(
 
 	// Build the return message
 	msg := c.event
-	msg.ReceiptHandle = fmt.Sprintf(
+	unsignedHandle := fmt.Sprintf(
 		"%s%s%d%s%s",
 		msg.MessageId,
 		RecipientHandleSeparator,
@@ -246,6 +246,7 @@ func (fq *FifoQueueImpl) tryLockMessage(
 		RecipientHandleSeparator,
 		fq.clientID,
 	)
+	msg.ReceiptHandle = fq.signReceiptHandle(unsignedHandle)
 
 	return &msg, true
 }
@@ -274,7 +275,7 @@ func (fq *FifoQueueImpl) PurgeAll(ctx context.Context) error {
 }
 
 // List returns all queue/clientID combinations in the table.
-func (fq *FifoQueueImpl) List(ctx context.Context) ([]QueueAndClientId, error) {
+func (fq *FifoQueueImpl) List(ctx context.Context) ([]QueueAndClientID, error) {
 	return listInternal(fq.baseQueue, ctx)
 }
 
@@ -293,252 +294,3 @@ func (fq *FifoQueueImpl) TableExists(ctx context.Context) bool {
 	return tableExistsInternal(fq.baseQueue, ctx)
 }
 
-// getInFlightGroups returns a set of message groups that have in-flight messages.
-func (fq *FifoQueueImpl) getInFlightGroups(ctx context.Context) (map[string]bool, error) {
-	inFlightGroups := make(map[string]bool)
-	var lastEvaluatedKey map[string]types.AttributeValue
-
-	now := time.Now().UnixMilli()
-
-	for {
-		expr, err := expression.NewBuilder().
-			WithKeyCondition(expression.Key("PK").Equal(expression.Value(fq.PartitionKey()))).
-			WithFilter(
-				expression.Name(ColumnHiddenUntil).GreaterThanEqual(expression.Value(now)),
-			).
-			WithProjection(
-				expression.NamesList(
-					expression.Name(ColumnMessageGroup),
-				)).
-			Build()
-
-		if err != nil {
-			return nil, fmt.Errorf("failed to build in-flight query expression: %w", err)
-		}
-
-		resp, err := fq.client.Query(ctx, &dynamodb.QueryInput{
-			TableName:                 &fq.table,
-			KeyConditionExpression:    expr.KeyCondition(),
-			ProjectionExpression:      expr.Projection(),
-			FilterExpression:          expr.Filter(),
-			ExpressionAttributeNames:  expr.Names(),
-			ExpressionAttributeValues: expr.Values(),
-			ExclusiveStartKey:         lastEvaluatedKey,
-			ConsistentRead:            aws.Bool(true), // Use strongly consistent read for FIFO
-		})
-
-		if err != nil {
-			return nil, err
-		}
-
-		for _, item := range resp.Items {
-			if groupAttr, ok := item[ColumnMessageGroup]; ok {
-				if val, ok := groupAttr.(*types.AttributeValueMemberS); ok {
-					inFlightGroups[val.Value] = true
-				}
-			}
-		}
-
-		if resp.LastEvaluatedKey == nil {
-			break
-		}
-		lastEvaluatedKey = resp.LastEvaluatedKey
-	}
-
-	if fq.logging {
-		log.Printf("found %d groups with in-flight messages", len(inFlightGroups))
-	}
-
-	return inFlightGroups, nil
-}
-
-// queryVisibleMessages queries all visible messages from the queue.
-func (fq *FifoQueueImpl) queryVisibleMessages(
-	ctx context.Context,
-	timeout time.Duration,
-) ([]messageCandidate, error) {
-	var candidates []messageCandidate
-	var lastEvaluatedKey map[string]types.AttributeValue
-
-	startTime := time.Now()
-	now := time.Now().UnixMilli()
-
-	for {
-		expr, err := expression.NewBuilder().
-			WithKeyCondition(expression.Key("PK").Equal(expression.Value(fq.PartitionKey()))).
-			WithFilter(
-				expression.Name(ColumnHiddenUntil).LessThan(expression.Value(now)),
-			).
-			WithProjection(
-				expression.NamesList(
-					expression.Name(ColumnSK),
-					expression.Name(ColumnHiddenUntil),
-					expression.Name(ColumnEvent),
-					expression.Name(ColumnMessageGroup),
-				)).
-			Build()
-
-		if err != nil {
-			return nil, fmt.Errorf("failed to build query expression: %w", err)
-		}
-
-		resp, err := fq.client.Query(ctx, &dynamodb.QueryInput{
-			TableName:                 &fq.table,
-			KeyConditionExpression:    expr.KeyCondition(),
-			ProjectionExpression:      expr.Projection(),
-			FilterExpression:          expr.Filter(),
-			ExpressionAttributeNames:  expr.Names(),
-			ExpressionAttributeValues: expr.Values(),
-			ExclusiveStartKey:         lastEvaluatedKey,
-			ScanIndexForward:          aws.Bool(true), // FIFO: oldest first
-			ConsistentRead:            aws.Bool(true), // Use strongly consistent read for FIFO
-		})
-
-		if err != nil {
-			return nil, err
-		}
-
-		for _, item := range resp.Items {
-			sk, err := getSKValue(item)
-			if err != nil {
-				return nil, err
-			}
-
-			hiddenUntil, err := getDynamoDbAttributeNumber(ColumnHiddenUntil, item)
-			if err != nil {
-				return nil, err
-			}
-
-			var event events.SQSMessage
-			if err := attributevalue.Unmarshal(item[ColumnEvent], &event); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal event: %w", err)
-			}
-
-			// Extract message group
-			messageGroup := DefaultMessageGroup
-			if groupAttr, ok := item[ColumnMessageGroup]; ok {
-				if val, ok := groupAttr.(*types.AttributeValueMemberS); ok {
-					messageGroup = val.Value
-				}
-			}
-
-			candidates = append(candidates, messageCandidate{
-				sk:           sk,
-				hiddenUntil:  hiddenUntil,
-				event:        event,
-				messageGroup: messageGroup,
-			})
-		}
-
-		if resp.LastEvaluatedKey == nil {
-			break
-		}
-		lastEvaluatedKey = resp.LastEvaluatedKey
-
-		if time.Since(startTime) > timeout {
-			break
-		}
-	}
-
-	return candidates, nil
-}
-
-// releaseLock releases a lock by resetting the hiddenUntil to make the message visible again.
-func (fq *FifoQueueImpl) releaseLock(ctx context.Context, sk string, currentHiddenUntil int64) {
-	// Reset hiddenUntil to 0 (immediately visible) with a condition to ensure we still own the lock
-	expr, err := expression.NewBuilder().
-		WithCondition(
-			expression.Equal(
-				expression.Name(ColumnHiddenUntil),
-				expression.Value(currentHiddenUntil),
-			),
-		).
-		WithUpdate(
-			expression.Set(
-				expression.Name(ColumnHiddenUntil),
-				expression.Value(0), // Make immediately visible
-			),
-		).
-		Build()
-
-	if err != nil {
-		return
-	}
-
-	_, _ = fq.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName: &fq.table,
-		Key: map[string]types.AttributeValue{
-			ColumnPK: &types.AttributeValueMemberS{Value: fq.PartitionKey()},
-			ColumnSK: &types.AttributeValueMemberS{Value: sk},
-		},
-		UpdateExpression:          expr.Update(),
-		ConditionExpression:       expr.Condition(),
-		ExpressionAttributeNames:  expr.Names(),
-		ExpressionAttributeValues: expr.Values(),
-	})
-}
-
-// isOldestInGroup checks if the candidate is the oldest message in the group.
-// This prevents locking a newer message when an older one exists (visible or not).
-func (fq *FifoQueueImpl) isOldestInGroup(
-	ctx context.Context,
-	messageGroup string,
-	candidateSK string,
-) (bool, error) {
-	// Query for ANY message in this group with SK < candidateSK
-	// If such a message exists, we should not lock the candidate
-	//
-	// IMPORTANT: We cannot use Limit with a filter because DynamoDB applies
-	// Limit BEFORE the filter. This could cause false positives where messages
-	// from other groups are selected by limit, then filtered out, returning 0
-	// results even when older messages from the target group exist.
-	// Instead, we paginate through results until we find one matching message
-	// or exhaust all candidates with SK < candidateSK.
-
-	var lastEvaluatedKey map[string]types.AttributeValue
-
-	for {
-		expr, err := expression.NewBuilder().
-			WithKeyCondition(
-				expression.Key("PK").Equal(expression.Value(fq.PartitionKey())).
-					And(expression.Key("SK").LessThan(expression.Value(candidateSK))),
-			).
-			WithFilter(
-				expression.Name(ColumnMessageGroup).Equal(expression.Value(messageGroup)),
-			).
-			WithProjection(expression.NamesList(expression.Name(ColumnSK))).
-			Build()
-
-		if err != nil {
-			return false, fmt.Errorf("failed to build oldest check expression: %w", err)
-		}
-
-		resp, err := fq.client.Query(ctx, &dynamodb.QueryInput{
-			TableName:                 &fq.table,
-			KeyConditionExpression:    expr.KeyCondition(),
-			FilterExpression:          expr.Filter(),
-			ProjectionExpression:      expr.Projection(),
-			ExpressionAttributeNames:  expr.Names(),
-			ExpressionAttributeValues: expr.Values(),
-			ExclusiveStartKey:         lastEvaluatedKey,
-			ScanIndexForward:          aws.Bool(true),
-			ConsistentRead:            aws.Bool(true), // CRITICAL: Use strongly consistent read
-		})
-
-		if err != nil {
-			return false, err
-		}
-
-		// If we found any message from this group with older SK, candidate is not oldest
-		if len(resp.Items) > 0 {
-			return false, nil
-		}
-
-		// If no more pages, candidate is the oldest
-		if resp.LastEvaluatedKey == nil {
-			return true, nil
-		}
-
-		lastEvaluatedKey = resp.LastEvaluatedKey
-	}
-}

@@ -73,9 +73,9 @@ func TestNewBaseQueue_QueueType(t *testing.T) {
 //
 // Validation Rules:
 // ───────────────────────────────────────────────────────────────────────────────
-//   table     → required → "table name not set"
-//   queueName → required → "queue name not set"
-//   clientID  → required → "client ID not set"
+//   table     → required → ErrTableNameNotSet
+//   queueName → required → ErrQueueNameNotSet
+//   clientID  → required → ErrClientIDNotSet
 // ───────────────────────────────────────────────────────────────────────────────
 func TestValidateOperation(t *testing.T) {
 	tests := []struct {
@@ -83,42 +83,42 @@ func TestValidateOperation(t *testing.T) {
 		table     string
 		queueName string
 		clientID  string
-		wantErr   string
+		wantErr   error
 	}{
 		{
 			name:      "all fields set",
 			table:     "my-table",
 			queueName: "my-queue",
 			clientID:  "my-client",
-			wantErr:   "",
+			wantErr:   nil,
 		},
 		{
 			name:      "missing table",
 			table:     "",
 			queueName: "my-queue",
 			clientID:  "my-client",
-			wantErr:   TableNameNotSet,
+			wantErr:   ErrTableNameNotSet,
 		},
 		{
 			name:      "missing queue name",
 			table:     "my-table",
 			queueName: "",
 			clientID:  "my-client",
-			wantErr:   QueueNameNotSet,
+			wantErr:   ErrQueueNameNotSet,
 		},
 		{
 			name:      "missing client ID",
 			table:     "my-table",
 			queueName: "my-queue",
 			clientID:  "",
-			wantErr:   ClientIDNotSet,
+			wantErr:   ErrClientIDNotSet,
 		},
 		{
 			name:      "all missing (table checked first)",
 			table:     "",
 			queueName: "",
 			clientID:  "",
-			wantErr:   TableNameNotSet,
+			wantErr:   ErrTableNameNotSet,
 		},
 	}
 
@@ -132,10 +132,10 @@ func TestValidateOperation(t *testing.T) {
 
 			err := bq.validateOperation()
 
-			if tt.wantErr == "" {
+			if tt.wantErr == nil {
 				assert.NoError(t, err)
 			} else {
-				assert.EqualError(t, err, tt.wantErr)
+				assert.ErrorIs(t, err, tt.wantErr)
 			}
 		})
 	}
@@ -227,4 +227,181 @@ func TestSetLogging(t *testing.T) {
 
 	bq.SetLogging(false)
 	assert.False(t, bq.Logging())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Deferred Validation Pattern Tests
+//
+// Tests validating that invalid names/IDs are accepted at setter time but
+// rejected at operation time (deferred validation pattern).
+//
+// Pattern:
+// ───────────────────────────────────────────────────────────────────────────────
+//   UseQueueName("invalid|name")  →  no error (accepted)
+//   queue.Count(ctx)              →  ErrInvalidQueueName (rejected)
+// ───────────────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// TestValidateOperation_InvalidQueueName_ReturnsError validates queue name format validation.
+func TestValidateOperation_InvalidQueueName_ReturnsError(t *testing.T) {
+	tests := []struct {
+		name      string
+		queueName string
+		wantErr   error
+	}{
+		{"contains pipe", "queue|name", ErrInvalidQueueName},
+		{"contains ampersand", "queue&name", ErrInvalidQueueName},
+		{"contains both", "queue|name&test", ErrInvalidQueueName},
+		{"path traversal", "queue..name", ErrInvalidQueueName},
+		{"65 chars (too long)", string(make([]byte, 65)), ErrInvalidQueueName},
+		{"contains space", "queue name", ErrInvalidQueueName},
+		{"contains slash", "queue/name", ErrInvalidQueueName},
+		{"contains dot", "queue.name", ErrInvalidQueueName},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bq := &baseQueue{
+				table:     "my-table",
+				queueName: tt.queueName,
+				clientID:  "valid-client",
+			}
+
+			err := bq.validateOperation()
+			assert.ErrorIs(t, err, tt.wantErr)
+		})
+	}
+}
+
+// TestValidateOperation_InvalidClientID_ReturnsError validates client ID format validation.
+func TestValidateOperation_InvalidClientID_ReturnsError(t *testing.T) {
+	tests := []struct {
+		name     string
+		clientID string
+		wantErr  error
+	}{
+		{"contains pipe", "client|id", ErrInvalidClientID},
+		{"contains ampersand", "client&id", ErrInvalidClientID},
+		{"contains both", "client|id&test", ErrInvalidClientID},
+		{"path traversal", "client..id", ErrInvalidClientID},
+		{"65 chars (too long)", string(make([]byte, 65)), ErrInvalidClientID},
+		{"contains space", "client id", ErrInvalidClientID},
+		{"contains slash", "client/id", ErrInvalidClientID},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bq := &baseQueue{
+				table:     "my-table",
+				queueName: "valid-queue",
+				clientID:  tt.clientID,
+			}
+
+			err := bq.validateOperation()
+			assert.ErrorIs(t, err, tt.wantErr)
+		})
+	}
+}
+
+// TestValidateOperation_ValidationOrder validates validation happens in correct order.
+//
+// Order:
+// ───────────────────────────────────────────────────────────────────────────────
+//   1. table empty      →  ErrTableNameNotSet
+//   2. queueName empty  →  ErrQueueNameNotSet
+//   3. queueName invalid→  ErrInvalidQueueName
+//   4. clientID empty   →  ErrClientIDNotSet
+//   5. clientID invalid →  ErrInvalidClientID
+// ───────────────────────────────────────────────────────────────────────────────
+func TestValidateOperation_ValidationOrder(t *testing.T) {
+	t.Run("table checked first", func(t *testing.T) {
+		bq := &baseQueue{
+			table:     "", // Invalid
+			queueName: "", // Also invalid
+			clientID:  "", // Also invalid
+		}
+		err := bq.validateOperation()
+		assert.ErrorIs(t, err, ErrTableNameNotSet, "table should be checked first")
+	})
+
+	t.Run("queueName empty checked second", func(t *testing.T) {
+		bq := &baseQueue{
+			table:     "my-table",
+			queueName: "", // Empty
+			clientID:  "", // Also invalid
+		}
+		err := bq.validateOperation()
+		assert.ErrorIs(t, err, ErrQueueNameNotSet, "queueName empty should be checked second")
+	})
+
+	t.Run("queueName invalid checked third", func(t *testing.T) {
+		bq := &baseQueue{
+			table:     "my-table",
+			queueName: "invalid|queue", // Invalid format
+			clientID:  "",              // Also invalid
+		}
+		err := bq.validateOperation()
+		assert.ErrorIs(t, err, ErrInvalidQueueName, "queueName format should be checked third")
+	})
+
+	t.Run("clientID empty checked fourth", func(t *testing.T) {
+		bq := &baseQueue{
+			table:     "my-table",
+			queueName: "valid-queue",
+			clientID:  "", // Empty
+		}
+		err := bq.validateOperation()
+		assert.ErrorIs(t, err, ErrClientIDNotSet, "clientID empty should be checked fourth")
+	})
+
+	t.Run("clientID invalid checked fifth", func(t *testing.T) {
+		bq := &baseQueue{
+			table:     "my-table",
+			queueName: "valid-queue",
+			clientID:  "invalid|client", // Invalid format
+		}
+		err := bq.validateOperation()
+		assert.ErrorIs(t, err, ErrInvalidClientID, "clientID format should be checked last")
+	})
+}
+
+// TestValidateOperation_ValidInputs_NoError validates all valid inputs pass.
+func TestValidateOperation_ValidInputs_NoError(t *testing.T) {
+	tests := []struct {
+		name      string
+		table     string
+		queueName string
+		clientID  string
+	}{
+		{"simple names", "table", "queue", "client"},
+		{"with dashes", "my-table", "my-queue", "my-client"},
+		{"with underscores", "my_table", "my_queue", "my_client"},
+		{"alphanumeric", "table123", "queue456", "client789"},
+		{"mixed", "My-Table_1", "My-Queue_2", "My-Client_3"},
+		{"64 chars queue", "table", string(make([]byte, 64)), "client"},
+		{"64 chars client", "table", "queue", string(make([]byte, 64))},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Fill arrays with valid chars
+			queueName := tt.queueName
+			clientID := tt.clientID
+			if len(queueName) == 64 {
+				queueName = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			}
+			if len(clientID) == 64 {
+				clientID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+			}
+
+			bq := &baseQueue{
+				table:     tt.table,
+				queueName: queueName,
+				clientID:  clientID,
+			}
+
+			err := bq.validateOperation()
+			assert.NoError(t, err)
+		})
+	}
 }

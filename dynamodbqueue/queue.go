@@ -2,6 +2,7 @@ package dynamodbqueue
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -37,15 +38,33 @@ const (
 const PartitionKeySeparator = "|"
 const RecipientHandleSeparator = "&"
 
-// Error messages.
-const (
-	TableNameNotSet = "table name not set"
-	QueueNameNotSet = "queue name not set"
-	ClientIDNotSet  = "client ID not set"
+// Sentinel errors for validation failures.
+var (
+	ErrTableNameNotSet  = errors.New("table name not set")
+	ErrQueueNameNotSet  = errors.New("queue name not set")
+	ErrClientIDNotSet   = errors.New("client ID not set")
+	ErrInvalidQueueName = errors.New("invalid queue name: must be 1-64 chars without | or & separators")
+	ErrInvalidClientID  = errors.New("invalid client ID: must be 1-64 chars without | or & separators")
+	ErrExpressionBuild  = errors.New("failed to build DynamoDB expression")
 )
 
-// QueueAndClientId is used when `List` operation returns queue/clientID combinations.
-type QueueAndClientId struct {
+// Sentinel errors for message operations.
+var (
+	ErrTooManyMessages    = errors.New("maximum of 25 messages allowed")
+	ErrMessageTooLarge    = errors.New("message body exceeds maximum size")
+	ErrAttributeNotFound  = errors.New("attribute not found")
+	ErrAttributeNotNumber = errors.New("attribute is not a number")
+	ErrAttributeNotString = errors.New("attribute is not a string")
+	ErrBatchWriteRetries  = errors.New("batch write failed after max retries")
+)
+
+// MaxMessageBodySize is the maximum allowed size for a message body (256KB).
+// This is conservative compared to DynamoDB's 400KB item limit to leave room
+// for message attributes and metadata.
+const MaxMessageBodySize = 256 * 1024
+
+// QueueAndClientID is used when `List` operation returns queue/clientID combinations.
+type QueueAndClientID struct {
 	QueueName string `json:"qn"`
 	ClientID  string `json:"cid"`
 }
@@ -125,7 +144,7 @@ type Queue interface {
 	PurgeAll(ctx context.Context) error
 
 	// List returns all queue/clientID combinations in the table.
-	List(ctx context.Context) ([]QueueAndClientId, error)
+	List(ctx context.Context) ([]QueueAndClientID, error)
 
 	// CreateQueueTable creates the DynamoDB table for the queue.
 	// Returns true if created, false if it already exists.

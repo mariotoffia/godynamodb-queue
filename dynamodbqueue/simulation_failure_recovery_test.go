@@ -33,7 +33,7 @@ func TestSimulation_ConsumerCrash_MessagesRedelivered(t *testing.T) {
 	ctx := context.Background()
 
 	queueName := fmt.Sprintf("sim-crash-%s", dynamodbqueue.RandomString(4))
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueStandard).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueStandard).
 		UseTable(tableName).
 		UseQueueName(queueName).
 		UseClientID("crash-sim")
@@ -84,9 +84,9 @@ func TestSimulation_ConsumerCrash_MessagesRedelivered(t *testing.T) {
 	assert.Equal(t, int32(expectedRemaining), remainingCount,
 		"should have %d messages remaining", expectedRemaining)
 
-	// PHASE 2: Wait for visibility timeout
-	t.Logf("Phase 2: Waiting %v for visibility timeout...", shortVisibility)
-	time.Sleep(shortVisibility + 500*time.Millisecond)
+	// PHASE 2: Wait for visibility timeout using retry-based polling
+	t.Logf("Phase 2: Waiting for visibility timeout (retry-based)...")
+	waitUntilVisible(ctx, t, queue, shortVisibility*3)
 
 	// PHASE 3: New consumer picks up remaining messages
 	t.Log("Phase 3: New consumer recovers remaining messages...")
@@ -137,7 +137,7 @@ func TestSimulation_PartialBatchFailure_SelectiveRetry(t *testing.T) {
 	ctx := context.Background()
 
 	queueName := fmt.Sprintf("sim-partial-%s", dynamodbqueue.RandomString(4))
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueStandard).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueStandard).
 		UseTable(tableName).
 		UseQueueName(queueName).
 		UseClientID("partial-sim")
@@ -259,7 +259,7 @@ func TestSimulation_ConcurrentDelete_OnlyOneSucceeds(t *testing.T) {
 	ctx := context.Background()
 
 	queueName := fmt.Sprintf("sim-delrace-%s", dynamodbqueue.RandomString(4))
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueStandard).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueStandard).
 		UseTable(tableName).
 		UseQueueName(queueName).
 		UseClientID("delrace-sim")
@@ -358,7 +358,7 @@ func TestSimulation_VisibilityCascade_MultipleRedeliveries(t *testing.T) {
 	ctx := context.Background()
 
 	queueName := fmt.Sprintf("sim-cascade-%s", dynamodbqueue.RandomString(4))
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueStandard).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueStandard).
 		UseTable(tableName).
 		UseQueueName(queueName).
 		UseClientID("cascade-sim")
@@ -418,9 +418,9 @@ func TestSimulation_VisibilityCascade_MultipleRedeliveries(t *testing.T) {
 			break
 		}
 
-		// Wait for visibility to expire before next attempt
+		// Wait for visibility to expire before next attempt using retry-based polling
 		if attempt < failAttempts {
-			time.Sleep(shortVisibility + 500*time.Millisecond)
+			waitUntilVisible(ctx, t, queue, shortVisibility*3)
 		}
 	}
 
@@ -440,4 +440,33 @@ func TestSimulation_VisibilityCascade_MultipleRedeliveries(t *testing.T) {
 	finalCount, err := queue.Count(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, int32(0), finalCount, "queue should be empty")
+}
+
+// waitUntilVisible waits until at least one message becomes visible in the queue.
+// This replaces hardcoded time.Sleep calls with a retry-based approach.
+func waitUntilVisible(ctx context.Context, t *testing.T, queue dynamodbqueue.Queue, maxWait time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(maxWait)
+	pollInterval := 100 * time.Millisecond
+
+	for time.Now().Before(deadline) {
+		// Use 0 timeout for instant poll, very short visibility just to check availability
+		msgs, err := queue.PollMessages(ctx, 0, time.Second, 1, 1)
+		if err != nil {
+			t.Logf("waitUntilVisible: poll error: %v", err)
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		if len(msgs) > 0 {
+			// Message is visible! Don't delete - let it expire (1 second visibility)
+			// The test loop will poll it again
+			return
+		}
+
+		time.Sleep(pollInterval)
+	}
+
+	t.Logf("waitUntilVisible: timed out after %v", maxWait)
 }

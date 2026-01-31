@@ -25,6 +25,7 @@ import (
 //	// Create a FIFO queue
 //	queue := dynamodbqueue.New(cfg, 0, dynamodbqueue.QueueFIFO)
 //	fifoQueue := queue.(dynamodbqueue.FifoQueue) // Access FIFO-specific methods
+//nolint:gocritic // hugeParam: cfg passed by value matches AWS SDK patterns (NewFromConfig takes aws.Config by value)
 func New(cfg aws.Config, ttl time.Duration, queueType ...QueueType) Queue {
 	client := dynamodb.NewFromConfig(cfg)
 

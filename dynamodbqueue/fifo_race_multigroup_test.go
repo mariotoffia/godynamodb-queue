@@ -47,7 +47,7 @@ func TestFIFORace_MultiGroup_Definitive(t *testing.T) {
 	ctx := context.Background()
 
 	queueName := fmt.Sprintf("race-def-%s", dynamodbqueue.RandomString(4))
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueFIFO).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueFIFO).
 		UseTable(tableName).
 		UseQueueName(queueName).
 		UseClientID("race-def")
@@ -171,7 +171,7 @@ func runMultiGroupRaceIteration(t *testing.T, iteration int) int {
 	ctx := context.Background()
 
 	queueName := fmt.Sprintf("race-rep-%d-%s", iteration, dynamodbqueue.RandomString(4))
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueFIFO).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueFIFO).
 		UseTable(tableName).
 		UseQueueName(queueName).
 		UseClientID("race-rep")
@@ -269,7 +269,7 @@ func TestFIFORace_MultiGroup_SingleMessagePerPoll(t *testing.T) {
 	ctx := context.Background()
 
 	queueName := fmt.Sprintf("race-single-%s", dynamodbqueue.RandomString(4))
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueFIFO).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueFIFO).
 		UseTable(tableName).
 		UseQueueName(queueName).
 		UseClientID("race-single")

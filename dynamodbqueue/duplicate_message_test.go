@@ -16,7 +16,7 @@ import (
 // TestNoDuplicateMessagesOnReQuery tests that when the polling loop re-queries
 // from the beginning (when lastEvaluatedKey becomes nil), it doesn't return
 // duplicate messages that were already locked in previous iterations.
-func TestNoDuplicateMessagesOnReQuery(t *testing.T) {
+func TestLocalNoDuplicateMessagesOnReQuery(t *testing.T) {
 	ctx := context.Background()
 
 	queueName := "dupTest-" + dynamodbqueue.RandomString(4)
@@ -63,7 +63,7 @@ func TestNoDuplicateMessagesOnReQuery(t *testing.T) {
 
 // TestNoDuplicateMessagesWithConcurrentConsumers tests that with multiple
 // concurrent consumers, no message is returned more than once across all consumers.
-func TestNoDuplicateMessagesWithConcurrentConsumers(t *testing.T) {
+func TestLocalNoDuplicateMessagesWithConcurrentConsumers(t *testing.T) {
 	ctx := context.Background()
 
 	queueName := "concDupTest-" + dynamodbqueue.RandomString(4)
@@ -140,7 +140,7 @@ func TestNoDuplicateMessagesWithConcurrentConsumers(t *testing.T) {
 
 // TestNoDuplicateMessagesWithLongPolling tests that long polling with timeout
 // doesn't produce duplicates when messages become visible during the poll.
-func TestNoDuplicateMessagesWithLongPolling(t *testing.T) {
+func TestLocalNoDuplicateMessagesWithLongPolling(t *testing.T) {
 	ctx := context.Background()
 
 	queueName := "longPollTest-" + dynamodbqueue.RandomString(4)
@@ -202,7 +202,7 @@ func TestNoDuplicateMessagesWithLongPolling(t *testing.T) {
 // TestNoDuplicatesAfterVisibilityTimeoutExpiry tests that when messages become
 // visible again after timeout expiry, they're not counted as duplicates in a
 // single poll operation.
-func TestNoDuplicatesAfterVisibilityTimeoutExpiry(t *testing.T) {
+func TestLocalNoDuplicatesAfterVisibilityTimeoutExpiry(t *testing.T) {
 	ctx := context.Background()
 
 	queueName := "visExpiry-" + dynamodbqueue.RandomString(4)
@@ -228,7 +228,7 @@ func TestNoDuplicatesAfterVisibilityTimeoutExpiry(t *testing.T) {
 	shortVisibility := time.Second * 1
 	msgs1, err := localQueue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, shortVisibility, 10, 10)
+		PollMessages(ctx, time.Second*3, shortVisibility, numMessages, 10)
 
 	require.NoError(t, err)
 	assert.Len(t, msgs1, numMessages)
@@ -246,7 +246,7 @@ func TestNoDuplicatesAfterVisibilityTimeoutExpiry(t *testing.T) {
 	// Second poll - messages should be visible again
 	msgs2, err := localQueue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, time.Minute, 10, 10)
+		PollMessages(ctx, time.Second*3, time.Minute, numMessages, 10)
 
 	require.NoError(t, err)
 	assert.Len(t, msgs2, numMessages)
@@ -261,7 +261,7 @@ func TestNoDuplicatesAfterVisibilityTimeoutExpiry(t *testing.T) {
 
 // TestMessageBodyUniqueness verifies that message bodies are unique and match
 // what was sent, ensuring no corruption or mixing of messages.
-func TestMessageBodyUniqueness(t *testing.T) {
+func TestLocalMessageBodyUniqueness(t *testing.T) {
 	ctx := context.Background()
 
 	queueName := "bodyUniq-" + dynamodbqueue.RandomString(4)
@@ -311,7 +311,7 @@ func TestMessageBodyUniqueness(t *testing.T) {
 
 // TestHighVolumeNoDuplicates tests with a high volume of messages to ensure
 // no duplicates under stress.
-func TestHighVolumeNoDuplicates(t *testing.T) {
+func TestLocalHighVolumeNoDuplicates(t *testing.T) {
 	ctx := context.Background()
 
 	queueName := "highVol-" + dynamodbqueue.RandomString(4)
@@ -398,7 +398,7 @@ func TestHighVolumeNoDuplicates(t *testing.T) {
 }
 
 // TestRapidPollCycles tests rapid successive poll operations don't cause duplicates.
-func TestRapidPollCycles(t *testing.T) {
+func TestLocalRapidPollCycles(t *testing.T) {
 	ctx := context.Background()
 
 	queueName := "rapidPoll-" + dynamodbqueue.RandomString(4)
@@ -426,7 +426,7 @@ func TestRapidPollCycles(t *testing.T) {
 	for cycle := 0; cycle < pollCycles; cycle++ {
 		msgs, err := localQueue.UseQueueName(queueName).
 			UseClientID(clientID).
-			PollMessages(ctx, 0, time.Minute, 5, 5)
+			PollMessages(ctx, time.Second*2, time.Minute, 5, 5)
 
 		require.NoError(t, err)
 

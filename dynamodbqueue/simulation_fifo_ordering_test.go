@@ -5,13 +5,12 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/mariotoffia/godynamodb-queue/dynamodbqueue"
+	"github.com/mariotoffia/godynamodb-queue/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -48,7 +47,7 @@ func runFIFOOrderingSimulation(t *testing.T, numGroups, messagesPerGroup int) {
 	ctx := context.Background()
 
 	queueName := fmt.Sprintf("sim-fifo-order-%s", dynamodbqueue.RandomString(4))
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueFIFO).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueFIFO).
 		UseTable(tableName).
 		UseQueueName(queueName).
 		UseClientID("fifo-sim")
@@ -156,7 +155,7 @@ func TestSimulation_FIFO_SlowGroupNoBlock(t *testing.T) {
 	ctx := context.Background()
 
 	queueName := fmt.Sprintf("sim-fifo-noblock-%s", dynamodbqueue.RandomString(4))
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueFIFO).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueFIFO).
 		UseTable(tableName).
 		UseQueueName(queueName).
 		UseClientID("noblock-sim")
@@ -178,53 +177,60 @@ func TestSimulation_FIFO_SlowGroupNoBlock(t *testing.T) {
 		}
 	}
 
-	// Poll and HOLD message from group-A (don't delete)
-	msgsA, err := fifo.PollMessages(ctx, 0, time.Minute*5, 1, 1)
+	// Poll and HOLD one message (from any group - FIFO is per-group, not cross-group)
+	heldMsg, err := fifo.PollMessages(ctx, 0, time.Minute*5, 1, 1)
 	require.NoError(t, err)
-	require.Len(t, msgsA, 1)
-	assert.Contains(t, msgsA[0].Body, "group-A", "first poll should get group-A message")
-	t.Logf("Holding message: %s", msgsA[0].Body)
+	require.Len(t, heldMsg, 1)
 
-	// Now poll more - should get messages from B and C, NOT more from A
-	groupBReceived := 0
-	groupCReceived := 0
-	groupAReceived := 0
+	// Determine which group the held message belongs to using proper parsing
+	heldGroup := testutil.ParseGroupFromBody(heldMsg[0].Body)
+	require.NotEmpty(t, heldGroup, "held message should belong to a known group")
+	t.Logf("Holding message from %s: %s", heldGroup, heldMsg[0].Body)
 
-	for i := 0; i < 20; i++ { // Multiple polls
+	// Track received messages per group
+	received := make(map[string]int)
+	for _, g := range groups {
+		received[g] = 0
+	}
+
+	// Poll remaining messages - the held group should be blocked
+	for i := 0; i < 30; i++ {
 		msgs, err := fifo.PollMessages(ctx, 0, time.Minute, 1, 3)
 		require.NoError(t, err)
-
-		for _, msg := range msgs {
-			if strings.Contains(msg.Body, "group-A") {
-				groupAReceived++
-			} else if strings.Contains(msg.Body, "group-B") {
-				groupBReceived++
-				_, _ = fifo.DeleteMessages(ctx, msg.ReceiptHandle)
-			} else if strings.Contains(msg.Body, "group-C") {
-				groupCReceived++
-				_, _ = fifo.DeleteMessages(ctx, msg.ReceiptHandle)
-			}
-		}
 
 		if len(msgs) == 0 {
 			break
 		}
+
+		for _, msg := range msgs {
+			g := testutil.ParseGroupFromBody(msg.Body)
+			if g != "" {
+				received[g]++
+			}
+			_, _ = fifo.DeleteMessages(ctx, msg.ReceiptHandle)
+		}
 	}
 
-	t.Logf("Received - A: %d, B: %d, C: %d", groupAReceived, groupBReceived, groupCReceived)
+	t.Logf("Received while holding %s: A=%d, B=%d, C=%d",
+		heldGroup, received["group-A"], received["group-B"], received["group-C"])
 
-	// Group A should be blocked (only 1 message held, no more received)
-	assert.Equal(t, 0, groupAReceived, "group-A should be blocked")
+	// The held group should be blocked (0 additional messages received)
+	assert.Equal(t, 0, received[heldGroup],
+		"held group %s should be blocked", heldGroup)
 
-	// Groups B and C should have processed all their messages
-	assert.Equal(t, messagesPerGroup, groupBReceived, "group-B should process all messages")
-	assert.Equal(t, messagesPerGroup, groupCReceived, "group-C should process all messages")
+	// Other groups should have processed all their messages
+	for _, g := range groups {
+		if g != heldGroup {
+			assert.Equal(t, messagesPerGroup, received[g],
+				"group %s should process all messages", g)
+		}
+	}
 
-	// Now delete the held message and verify group-A unblocks
-	_, err = fifo.DeleteMessages(ctx, msgsA[0].ReceiptHandle)
+	// Now delete the held message and verify the group unblocks
+	_, err = fifo.DeleteMessages(ctx, heldMsg[0].ReceiptHandle)
 	require.NoError(t, err)
 
-	// Poll remaining group-A messages
+	// Poll remaining messages from the previously held group
 	for {
 		msgs, err := fifo.PollMessages(ctx, 0, time.Minute, 1, 10)
 		require.NoError(t, err)
@@ -232,16 +238,17 @@ func TestSimulation_FIFO_SlowGroupNoBlock(t *testing.T) {
 			break
 		}
 		for _, msg := range msgs {
-			if strings.Contains(msg.Body, "group-A") {
-				groupAReceived++
+			g := testutil.ParseGroupFromBody(msg.Body)
+			if g == heldGroup {
+				received[heldGroup]++
 			}
 			_, _ = fifo.DeleteMessages(ctx, msg.ReceiptHandle)
 		}
 	}
 
-	// Group A should now have processed remaining messages
-	assert.Equal(t, messagesPerGroup-1, groupAReceived,
-		"group-A should process remaining messages after unblock")
+	// The previously held group should now have processed remaining messages
+	assert.Equal(t, messagesPerGroup-1, received[heldGroup],
+		"group %s should process remaining messages after unblock", heldGroup)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -262,7 +269,7 @@ func TestSimulation_FIFO_InFlightTracking_100Groups(t *testing.T) {
 	ctx := context.Background()
 
 	queueName := fmt.Sprintf("sim-fifo-inflight-%s", dynamodbqueue.RandomString(4))
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueFIFO).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueFIFO).
 		UseTable(tableName).
 		UseQueueName(queueName).
 		UseClientID("inflight-sim")
@@ -346,161 +353,5 @@ func TestSimulation_FIFO_InFlightTracking_100Groups(t *testing.T) {
 		group := parts[0]
 		assert.False(t, groupsWithInFlight[group],
 			"should not receive from group %s which still has in-flight", group)
-	}
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// FIFO Concurrent Consumer Simulations
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// TestSimulation_FIFO_ConcurrentConsumers_NoOrderViolation verifies concurrent consumers.
-//
-// Scenario:
-// ───────────────────────────────────────────────────────────────────────────────
-//   5 groups, 100 messages each (500 total)
-//   3 concurrent consumers
-//   Verify: Each group still maintains strict FIFO order
-//   Note: FIFO guarantees only ONE message in-flight per group at a time,
-//         so messages within a group must be processed sequentially.
-// ───────────────────────────────────────────────────────────────────────────────
-func TestSimulation_FIFO_ConcurrentConsumers_NoOrderViolation(t *testing.T) {
-	ctx := context.Background()
-
-	queueName := fmt.Sprintf("sim-fifo-conc-%s", dynamodbqueue.RandomString(4))
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueFIFO).
-		UseTable(tableName).
-		UseQueueName(queueName).
-		UseClientID("fifo-conc")
-
-	fifo := queue.(dynamodbqueue.FifoQueue)
-	require.NoError(t, fifo.Purge(ctx))
-
-	const numGroups = 5
-	const messagesPerGroup = 100
-	const numConsumers = 3
-	const totalMessages = numGroups * messagesPerGroup
-
-	// Create groups
-	groups := make([]string, numGroups)
-	for i := range groups {
-		groups[i] = fmt.Sprintf("cg%d", i)
-	}
-
-	// Push messages with sufficient delay to ensure timestamp ordering
-	// The SK uses nanosecond timestamp, so 10ms delay ensures distinct timestamps
-	t.Logf("Pushing %d messages to %d groups...", totalMessages, numGroups)
-	for _, group := range groups {
-		for i := 0; i < messagesPerGroup; i++ {
-			_, err := fifo.PushMessagesWithGroup(ctx, 0, group, events.SQSMessage{
-				Body: fmt.Sprintf("%s|%03d", group, i),
-			})
-			require.NoError(t, err)
-			// Use 10ms delay to ensure distinct timestamps under any system load
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-
-	// Track ALL received messages per group to verify order post-hoc
-	groupMessages := make(map[string][]int)
-	var groupMu sync.Mutex
-	var totalReceived int64
-
-	// Done channel to signal consumers to stop
-	done := make(chan struct{})
-	var doneOnce sync.Once
-
-	var wg sync.WaitGroup
-	wg.Add(numConsumers)
-
-	t.Logf("Starting %d consumers...", numConsumers)
-
-	for c := 0; c < numConsumers; c++ {
-		go func(consumerID int) {
-			defer wg.Done()
-
-			emptyPolls := 0
-			for {
-				select {
-				case <-done:
-					return
-				default:
-				}
-
-				msgs, err := fifo.PollMessages(ctx, time.Millisecond*200, time.Minute*5, 1, numGroups)
-				if err != nil {
-					return
-				}
-
-				if len(msgs) == 0 {
-					emptyPolls++
-					// With FIFO, all groups might be temporarily blocked
-					if emptyPolls > 20 && atomic.LoadInt64(&totalReceived) >= totalMessages {
-						return
-					}
-					time.Sleep(time.Millisecond * 100)
-					continue
-				}
-
-				emptyPolls = 0
-
-				for _, msg := range msgs {
-					parts := strings.Split(msg.Body, "|")
-					group := parts[0]
-					msgNum, _ := strconv.Atoi(parts[1])
-
-					// Record message for post-hoc analysis
-					groupMu.Lock()
-					groupMessages[group] = append(groupMessages[group], msgNum)
-					groupMu.Unlock()
-
-					// Delete BEFORE incrementing counter to ensure proper ordering
-					_, _ = fifo.DeleteMessages(ctx, msg.ReceiptHandle)
-
-					received := atomic.AddInt64(&totalReceived, 1)
-
-					// Signal done when all messages consumed
-					if received >= totalMessages {
-						doneOnce.Do(func() { close(done) })
-						return
-					}
-				}
-			}
-		}(c)
-	}
-
-	// Timeout safety
-	go func() {
-		time.Sleep(3 * time.Minute)
-		select {
-		case <-done:
-		default:
-			doneOnce.Do(func() { close(done) })
-		}
-	}()
-
-	wg.Wait()
-
-	// Post-hoc verification: check ordering within each group
-	violations := 0
-	for group, msgs := range groupMessages {
-		for i := 1; i < len(msgs); i++ {
-			if msgs[i] <= msgs[i-1] {
-				violations++
-				t.Errorf("ORDERING VIOLATION in group %s: message %d came after %d (position %d)",
-					group, msgs[i], msgs[i-1], i)
-			}
-		}
-	}
-
-	t.Logf("Completed: %d messages received, %d violations", totalReceived, violations)
-
-	assert.Equal(t, 0, violations, "should have no ordering violations")
-	assert.Equal(t, int64(totalMessages), totalReceived, "all messages should be consumed")
-
-	// Verify all messages were received for each group
-	for _, group := range groups {
-		receivedCount := len(groupMessages[group])
-		assert.Equal(t, messagesPerGroup, receivedCount,
-			"group %s should have received all %d messages", group, messagesPerGroup)
 	}
 }

@@ -28,7 +28,7 @@ func BenchmarkMemory_PushSingleMessage(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := queue.PushMessages(ctx, 0, msg)
 		if err != nil {
 			b.Fatal(err)
@@ -52,7 +52,7 @@ func BenchmarkMemory_PushBatch25(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := queue.PushMessages(ctx, 0, messages...)
 		if err != nil {
 			b.Fatal(err)
@@ -74,7 +74,7 @@ func BenchmarkMemory_PollAndLock(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		msgs, err := queue.PollMessages(ctx, 0, time.Minute, 10, 10)
 		if err != nil {
 			b.Fatal(err)
@@ -147,7 +147,7 @@ func benchmarkSustainedLoad(b *testing.B, messageCount int) {
 
 	// Continuous poll/delete cycles
 	totalProcessed := 0
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		msgs, err := queue.PollMessages(ctx, 0, time.Minute, 10, 25)
 		if err != nil {
 			b.Fatal(err)
@@ -155,7 +155,7 @@ func benchmarkSustainedLoad(b *testing.B, messageCount int) {
 
 		if len(msgs) == 0 {
 			// Repopulate if empty
-			for j := 0; j < 100; j++ {
+			for j := range 100 {
 				_, _ = queue.PushMessages(ctx, 0, events.SQSMessage{
 					Body: fmt.Sprintf("repop-%d-%d", i, j),
 				})
@@ -214,7 +214,7 @@ func benchmarkMessageSize(b *testing.B, size int) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		// Push
 		_, err := queue.PushMessages(ctx, 0, msg)
 		if err != nil {
@@ -255,7 +255,7 @@ func BenchmarkMemory_ToBatches(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = dynamodbqueue.ToBatches(items, 25)
 	}
 }
@@ -270,7 +270,7 @@ func BenchmarkMemory_ToReceiptHandles(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = dynamodbqueue.ToReceiptHandles(msgs)
 	}
 }
@@ -279,7 +279,7 @@ func BenchmarkMemory_ToReceiptHandles(b *testing.B) {
 func BenchmarkMemory_RandomString(b *testing.B) {
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = dynamodbqueue.RandomString(10)
 	}
 }
@@ -310,7 +310,7 @@ func BenchmarkMemory_FIFO_InFlightTracking(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		msgs, err := fifo.PollMessages(ctx, 0, time.Minute, 1, 10)
 		if err != nil {
 			b.Fatal(err)
@@ -323,7 +323,7 @@ func BenchmarkMemory_FIFO_InFlightTracking(b *testing.B) {
 
 		// Repopulate some groups
 		if i%10 == 0 {
-			for j := 0; j < 5; j++ {
+			for j := range 5 {
 				_, _ = fifo.PushMessagesWithGroup(ctx, 0, groups[j], events.SQSMessage{
 					Body: fmt.Sprintf("repop-%d", i),
 				})

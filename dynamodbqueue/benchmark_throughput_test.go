@@ -26,7 +26,7 @@ func BenchmarkPush_SingleMessage(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := queue.PushMessages(ctx, 0, msg)
 		if err != nil {
 			b.Fatal(err)
@@ -65,7 +65,7 @@ func benchmarkPushBatch(b *testing.B, batchSize int) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := queue.PushMessages(ctx, 0, messages...)
 		if err != nil {
 			b.Fatal(err)
@@ -94,7 +94,7 @@ func BenchmarkPoll_EmptyQueue(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := queue.PollMessages(ctx, 0, time.Minute, 0, 10)
 		if err != nil {
 			b.Fatal(err)
@@ -131,7 +131,7 @@ func benchmarkPollAtDepth(b *testing.B, depth, pollSize int) {
 	b.ReportAllocs()
 
 	totalPolled := 0
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		msgs, err := queue.PollMessages(ctx, 0, time.Minute, pollSize, pollSize)
 		if err != nil {
 			b.Fatal(err)
@@ -162,7 +162,7 @@ func BenchmarkDelete_SingleMessage(b *testing.B) {
 
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		b.StopTimer()
 		// Push a message
 		_, err := queue.PushMessages(ctx, 0, events.SQSMessage{Body: "delete-test"})
@@ -194,7 +194,7 @@ func BenchmarkDelete_Batch25(b *testing.B) {
 
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		b.StopTimer()
 		// Push 25 messages
 		messages := make([]events.SQSMessage, 25)
@@ -240,7 +240,7 @@ func BenchmarkEndToEnd_SingleCycle(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		// Push
 		_, err := queue.PushMessages(ctx, 0, msg)
 		if err != nil {
@@ -280,7 +280,7 @@ func BenchmarkEndToEnd_BatchCycle(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		// Push batch
 		_, err := queue.PushMessages(ctx, 0, messages...)
 		if err != nil {
@@ -324,7 +324,7 @@ func BenchmarkFIFO_PushSingleGroup(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := fifo.PushMessagesWithGroup(ctx, 0, "group-A", msg)
 		if err != nil {
 			b.Fatal(err)
@@ -347,7 +347,7 @@ func BenchmarkFIFO_PushMultipleGroups(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		group := groups[i%len(groups)]
 		_, err := fifo.PushMessagesWithGroup(ctx, 0, group, msg)
 		if err != nil {
@@ -369,7 +369,7 @@ func setupBenchmarkQueue(b *testing.B, queueType dynamodbqueue.QueueType) dynamo
 	suffix := dynamodbqueue.RandomString(6)
 	queueName := fmt.Sprintf("bench-%s", suffix)
 
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, queueType).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, queueType).
 		UseTable(tableName).
 		UseQueueName(queueName).
 		UseClientID("bench-client")

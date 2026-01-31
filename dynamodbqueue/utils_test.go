@@ -158,12 +158,9 @@ func TestDecodeRecipientHandle(t *testing.T) {
 			expectInvalidFlag: true,
 		},
 		{
-			name:            "non-numeric hidden_until",
-			handle:          "pk&sk&notanumber&owner",
-			wantPK:          "pk",
-			wantSK:          "sk",
-			wantHiddenUntil: 0, // ParseInt returns 0 on error
-			wantOwner:       "owner",
+			name:              "non-numeric hidden_until",
+			handle:            "pk&sk&notanumber&owner",
+			expectInvalidFlag: true, // Invalid number should fail completely
 		},
 	}
 
@@ -418,7 +415,7 @@ func TestRandomString_Uniqueness(t *testing.T) {
 	seen := make(map[string]bool)
 	iterations := 100
 
-	for i := 0; i < iterations; i++ {
+	for range iterations {
 		s := RandomString(10)
 		if seen[s] {
 			t.Errorf("duplicate string generated: %s", s)
@@ -446,7 +443,7 @@ func TestRandomInt(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Run multiple iterations to verify bounds
-			for i := 0; i < 100; i++ {
+			for range 100 {
 				result := RandomInt(tt.min, tt.max)
 				assert.GreaterOrEqual(t, result, tt.min, "should be >= min")
 				assert.Less(t, result, tt.max, "should be < max")
@@ -488,10 +485,151 @@ func TestRandomPostfix(t *testing.T) {
 // TestRandomPostfix_Uniqueness validates unique postfixes.
 func TestRandomPostfix_Uniqueness(t *testing.T) {
 	seen := make(map[string]bool)
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		result := RandomPostfix("test")
 		assert.False(t, seen[result], "should generate unique postfixes")
 		seen[result] = true
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Log Truncation Tests
+//
+// Tests for truncateForLog which truncates sensitive data for secure logging.
+//
+// Truncation Behavior:
+// ───────────────────────────────────────────────────────────────────────────────
+//   len(s) <= maxLen  →  return s (no truncation)
+//   len(s) > maxLen   →  return s[:maxLen] + "..."
+//   maxLen <= 0       →  use default maxLen of 8
+// ───────────────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// TestTruncateForLog_EmptyString validates empty input handling.
+func TestTruncateForLog_EmptyString(t *testing.T) {
+	result := truncateForLog("", 10)
+	assert.Equal(t, "", result, "empty string should return empty string")
+}
+
+// TestTruncateForLog_ShorterThanMax validates no truncation when shorter.
+func TestTruncateForLog_ShorterThanMax(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+	}{
+		{"1 char with max 10", "a", 10},
+		{"5 chars with max 10", "hello", 10},
+		{"9 chars with max 10", "123456789", 10},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := truncateForLog(tt.input, tt.maxLen)
+			assert.Equal(t, tt.input, result, "should return original when shorter than max")
+		})
+	}
+}
+
+// TestTruncateForLog_ExactlyMaxLen validates boundary case.
+func TestTruncateForLog_ExactlyMaxLen(t *testing.T) {
+	input := "1234567890" // 10 chars
+	result := truncateForLog(input, 10)
+
+	assert.Equal(t, input, result, "exactly maxLen should not truncate")
+	assert.NotContains(t, result, "...", "should not have ellipsis")
+}
+
+// TestTruncateForLog_LongerThanMax validates truncation with ellipsis.
+func TestTruncateForLog_LongerThanMax(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		maxLen   int
+		expected string
+	}{
+		{"11 chars with max 10", "12345678901", 10, "1234567890..."},
+		{"20 chars with max 5", "12345678901234567890", 5, "12345..."},
+		{"long string", strings.Repeat("x", 100), 8, "xxxxxxxx..."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := truncateForLog(tt.input, tt.maxLen)
+			assert.Equal(t, tt.expected, result)
+			assert.True(t, strings.HasSuffix(result, "..."), "should end with ellipsis")
+		})
+	}
+}
+
+// TestTruncateForLog_SensitiveData validates protection of sensitive values.
+//
+// Use Cases:
+// ───────────────────────────────────────────────────────────────────────────────
+//   Receipt handles, signing keys, tokens should be truncated
+//   to prevent full exposure in logs.
+// ───────────────────────────────────────────────────────────────────────────────
+func TestTruncateForLog_SensitiveData(t *testing.T) {
+	sensitiveData := []string{
+		"pk&sk&1234567890&owner&signature123456789",
+		"very-long-receipt-handle-that-should-be-truncated",
+		"signing-key-abcdef0123456789abcdef0123456789",
+		"jwt-token-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+	}
+
+	for _, data := range sensitiveData {
+		result := truncateForLog(data, 16)
+
+		// Should not expose full value
+		assert.NotEqual(t, data, result, "should truncate sensitive data")
+
+		// Should truncate to maxLen + ellipsis
+		assert.Equal(t, 16+3, len(result), "truncated length should be maxLen + '...'")
+
+		// Original should not be recoverable from result
+		assert.True(t, len(data) > len(result)-3, "original should be longer")
+	}
+}
+
+// TestTruncateForLog_ZeroMaxLen validates default handling.
+func TestTruncateForLog_ZeroMaxLen(t *testing.T) {
+	input := "1234567890123456" // 16 chars
+
+	result := truncateForLog(input, 0)
+
+	// Should use default of 8
+	assert.Equal(t, "12345678...", result, "zero maxLen should use default 8")
+}
+
+// TestTruncateForLog_NegativeMaxLen validates negative handling.
+func TestTruncateForLog_NegativeMaxLen(t *testing.T) {
+	input := "1234567890123456" // 16 chars
+
+	tests := []int{-1, -10, -100}
+	for _, maxLen := range tests {
+		result := truncateForLog(input, maxLen)
+
+		// Should use default of 8
+		assert.Equal(t, "12345678...", result,
+			"negative maxLen %d should use default 8", maxLen)
+	}
+}
+
+// TestTruncateForLog_ShortString_NoEllipsis validates short strings unchanged.
+func TestTruncateForLog_ShortString_NoEllipsis(t *testing.T) {
+	tests := []struct {
+		input  string
+		maxLen int
+	}{
+		{"ab", 8},
+		{"", 8},
+		{"a", 1},
+	}
+
+	for _, tt := range tests {
+		result := truncateForLog(tt.input, tt.maxLen)
+		assert.NotContains(t, result, "...",
+			"short string should not have ellipsis")
 	}
 }
 
@@ -502,7 +640,7 @@ func TestRandomPostfix_Uniqueness(t *testing.T) {
 // makeIntSlice creates a slice of integers from 0 to n-1.
 func makeIntSlice(n int) []int {
 	result := make([]int, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		result[i] = i
 	}
 	return result

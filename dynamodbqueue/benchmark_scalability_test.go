@@ -59,7 +59,7 @@ func benchmarkConsumerScalability(b *testing.B, numConsumers, numMessages int) {
 
 	start := time.Now()
 
-	for c := 0; c < numConsumers; c++ {
+	for range numConsumers {
 		go func() {
 			defer wg.Done()
 
@@ -144,7 +144,7 @@ func benchmarkFIFOGroupScalability(b *testing.B, numGroups, messagesPerGroup int
 
 	// Push messages to all groups
 	for _, group := range groups {
-		for i := 0; i < messagesPerGroup; i++ {
+		for i := range messagesPerGroup {
 			_, err := fifo.PushMessagesWithGroup(ctx, 0, group, events.SQSMessage{
 				Body: fmt.Sprintf("fifo-scale-%s-%d", group, i),
 			})
@@ -226,7 +226,7 @@ func benchmarkQueueDepthImpact(b *testing.B, depth int) {
 	b.ResetTimer()
 
 	// Measure poll latency without consuming (just query time)
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		msgs, err := queue.PollMessages(ctx, 0, time.Minute, 10, 10)
 		if err != nil {
 			b.Fatal(err)
@@ -289,11 +289,11 @@ func benchmarkConcurrentPush(b *testing.B, numPushers, messagesPerPusher int) {
 
 	start := time.Now()
 
-	for p := 0; p < numPushers; p++ {
+	for p := range numPushers {
 		go func(pusherID int) {
 			defer wg.Done()
 
-			for i := 0; i < messagesPerPusher; i++ {
+			for i := range messagesPerPusher {
 				_, err := queue.PushMessages(ctx, 0, events.SQSMessage{
 					Body: fmt.Sprintf("conc-push-%d-%d", pusherID, i),
 				})
@@ -357,7 +357,7 @@ func benchmarkBatchSizeImpact(b *testing.B, batchSize int) {
 
 	start := time.Now()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := queue.PushMessages(ctx, 0, messages...)
 		if err != nil {
 			b.Fatal(err)

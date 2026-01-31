@@ -37,19 +37,15 @@ func (sq *StandardQueue) UseTable(table string) Queue {
 }
 
 // UseQueueName sets the queue name.
+// Validation occurs when queue operations are called.
 func (sq *StandardQueue) UseQueueName(queueName string) Queue {
-	if !isValidQueueName(queueName) {
-		panic("queueName must be set to a valid string")
-	}
 	sq.queueName = queueName
 	return sq
 }
 
 // UseClientID sets the client ID.
+// Validation occurs when queue operations are called.
 func (sq *StandardQueue) UseClientID(clientID string) Queue {
-	if !isValidClientID(clientID) {
-		panic("clientID must be set to a valid string")
-	}
 	sq.clientID = clientID
 	return sq
 }
@@ -63,6 +59,23 @@ func (sq *StandardQueue) PushMessages(
 	return pushMessagesInternal(sq.baseQueue, ctx, ttl, "", messages...)
 }
 
+// pollState holds state for the polling loop.
+type pollState struct {
+	startTime time.Time
+	messages  []events.SQSMessage
+}
+
+// shouldBreak checks if the polling loop should exit.
+func (ps *pollState) shouldBreak(minMessages, maxMessages int, timeout time.Duration) bool {
+	if len(ps.messages) >= maxMessages {
+		return true
+	}
+	if len(ps.messages) >= minMessages {
+		return true
+	}
+	return time.Since(ps.startTime) > timeout
+}
+
 // PollMessages polls messages from the queue using SQS-compatible semantics.
 func (sq *StandardQueue) PollMessages(
 	ctx context.Context,
@@ -73,30 +86,22 @@ func (sq *StandardQueue) PollMessages(
 		return nil, err
 	}
 
-	var allMessages []events.SQSMessage
-	startTime := time.Now()
+	state := &pollState{startTime: time.Now()}
 
-	for {
-		remaining := maxMessages - len(allMessages)
-		if remaining <= 0 {
-			break
+	for !state.shouldBreak(minMessages, maxMessages, timeout) {
+		if err := ctx.Err(); err != nil {
+			return sq.returnMessagesOrError(state.messages, err)
 		}
 
-		elapsed := time.Since(startTime)
-		remainingTimeout := timeout - elapsed
-		if remainingTimeout < 0 {
-			remainingTimeout = 0
-		}
+		remaining := maxMessages - len(state.messages)
+		remainingTimeout := sq.calcRemainingTimeout(timeout, state.startTime)
 
-		candidates, err := sq.collectCandidates(ctx, remainingTimeout, minMessages-len(allMessages), remaining)
+		candidates, err := sq.collectCandidates(ctx, remainingTimeout, minMessages-len(state.messages), remaining)
 		if err != nil {
 			return nil, err
 		}
 
 		if len(candidates) == 0 {
-			if len(allMessages) >= minMessages || time.Since(startTime) > timeout {
-				break
-			}
 			time.Sleep(time.Duration(RandomInt(50, 150)) * time.Millisecond)
 			continue
 		}
@@ -106,26 +111,35 @@ func (sq *StandardQueue) PollMessages(
 			return nil, err
 		}
 
-		allMessages = append(allMessages, locked...)
-
-		if len(allMessages) >= minMessages {
-			break
-		}
-
-		if time.Since(startTime) > timeout {
-			break
-		}
+		state.messages = append(state.messages, locked...)
 
 		if len(locked) >= len(candidates) {
 			time.Sleep(time.Duration(RandomInt(50, 150)) * time.Millisecond)
 		}
 	}
 
-	if len(allMessages) == 0 {
+	if len(state.messages) == 0 {
 		return nil, nil
 	}
 
-	return allMessages, nil
+	return state.messages, nil
+}
+
+// returnMessagesOrError returns messages if any exist, otherwise returns the error.
+func (sq *StandardQueue) returnMessagesOrError(messages []events.SQSMessage, err error) ([]events.SQSMessage, error) {
+	if len(messages) > 0 {
+		return messages, nil
+	}
+	return nil, err
+}
+
+// calcRemainingTimeout calculates the remaining timeout duration.
+func (sq *StandardQueue) calcRemainingTimeout(timeout time.Duration, startTime time.Time) time.Duration {
+	remaining := timeout - time.Since(startTime)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 // DeleteMessages deletes messages using their receipt handles.
@@ -152,7 +166,7 @@ func (sq *StandardQueue) PurgeAll(ctx context.Context) error {
 }
 
 // List returns all queue/clientID combinations in the table.
-func (sq *StandardQueue) List(ctx context.Context) ([]QueueAndClientId, error) {
+func (sq *StandardQueue) List(ctx context.Context) ([]QueueAndClientID, error) {
 	return listInternal(sq.baseQueue, ctx)
 }
 
@@ -173,10 +187,41 @@ func (sq *StandardQueue) TableExists(ctx context.Context) bool {
 
 // messageCandidate holds message data collected during the query phase before locking.
 type messageCandidate struct {
-	sk           string
-	hiddenUntil  int64
 	event        events.SQSMessage
+	sk           string
 	messageGroup string // Used by FIFO queue
+	hiddenUntil  int64
+}
+
+// collectState holds state for the candidate collection loop.
+type collectState struct { //nolint:govet // fieldalignment: internal state struct, not allocated in large quantities
+	startTime        time.Time
+	candidates       []messageCandidate
+	lastQueriedSK    string
+	lastEvaluatedKey map[string]types.AttributeValue
+}
+
+// shouldStopCollecting checks if we should stop collecting candidates.
+func (cs *collectState) shouldStopCollecting(minMessages, maxMessages int, timeout time.Duration) bool {
+	if len(cs.candidates) >= maxMessages {
+		return true
+	}
+	if len(cs.candidates) >= minMessages {
+		return true
+	}
+	return time.Since(cs.startTime) > timeout
+}
+
+// updatePaginationKey updates the pagination key for the next query.
+func (cs *collectState) updatePaginationKey(pk string, respKey map[string]types.AttributeValue) {
+	if respKey != nil {
+		cs.lastEvaluatedKey = respKey
+	} else if cs.lastQueriedSK != "" {
+		cs.lastEvaluatedKey = map[string]types.AttributeValue{
+			ColumnPK: &types.AttributeValueMemberS{Value: pk},
+			ColumnSK: &types.AttributeValueMemberS{Value: cs.lastQueriedSK},
+		}
+	}
 }
 
 // collectCandidates queries for visible messages without locking them.
@@ -185,43 +230,14 @@ func (sq *StandardQueue) collectCandidates(
 	timeout time.Duration,
 	minMessages, maxMessages int,
 ) ([]messageCandidate, error) {
-	var candidates []messageCandidate
-	var lastEvaluatedKey map[string]types.AttributeValue
-	var lastQueriedSK string
+	state := &collectState{startTime: time.Now()}
 
-	startTime := time.Now()
-
-	for {
-		expr, err := expression.NewBuilder().
-			WithKeyCondition(expression.Key("PK").Equal(expression.Value(sq.PartitionKey()))).
-			WithFilter(
-				expression.Name(ColumnHiddenUntil).
-					LessThan(expression.Value(time.Now().UnixMilli())),
-			).
-			WithProjection(
-				expression.NamesList(
-					expression.Name(ColumnSK),
-					expression.Name(ColumnHiddenUntil),
-					expression.Name(ColumnEvent),
-				)).
-			Build()
-
-		if err != nil {
-			return nil, fmt.Errorf("failed to build query expression: %w", err)
+	for !state.shouldStopCollecting(minMessages, maxMessages, timeout) {
+		if err := ctx.Err(); err != nil {
+			return sq.returnCandidatesOrError(state.candidates, err)
 		}
 
-		resp, err := sq.client.Query(ctx, &dynamodb.QueryInput{
-			TableName:                 &sq.table,
-			KeyConditionExpression:    expr.KeyCondition(),
-			ProjectionExpression:      expr.Projection(),
-			FilterExpression:          expr.Filter(),
-			ExpressionAttributeNames:  expr.Names(),
-			ExpressionAttributeValues: expr.Values(),
-			Limit:                     aws.Int32(int32(maxMessages - len(candidates))),
-			ExclusiveStartKey:         lastEvaluatedKey,
-			ScanIndexForward:          aws.Bool(true),
-		})
-
+		resp, err := sq.queryVisibleCandidates(ctx, maxMessages-len(state.candidates), state.lastEvaluatedKey)
 		if err != nil {
 			return nil, err
 		}
@@ -230,56 +246,106 @@ func (sq *StandardQueue) collectCandidates(
 			log.Printf("query returned %d items", len(resp.Items))
 		}
 
-		for _, item := range resp.Items {
-			sk, err := getSKValue(item)
-			if err != nil {
-				return nil, err
-			}
-
-			hiddenUntil, err := getDynamoDbAttributeNumber(ColumnHiddenUntil, item)
-			if err != nil {
-				return nil, err
-			}
-
-			var event events.SQSMessage
-			if err := attributevalue.Unmarshal(item[ColumnEvent], &event); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal event: %w", err)
-			}
-
-			candidates = append(candidates, messageCandidate{
-				sk:          sk,
-				hiddenUntil: hiddenUntil,
-				event:       event,
-			})
-
-			lastQueriedSK = sk
-
-			if len(candidates) >= maxMessages {
-				break
-			}
+		if err := sq.processQueryItems(resp.Items, state, maxMessages); err != nil {
+			return nil, err
 		}
 
-		if len(candidates) >= minMessages {
-			break
-		}
-
-		if time.Since(startTime) > timeout {
-			break
-		}
-
-		if resp.LastEvaluatedKey != nil {
-			lastEvaluatedKey = resp.LastEvaluatedKey
-		} else if lastQueriedSK != "" {
-			lastEvaluatedKey = map[string]types.AttributeValue{
-				ColumnPK: &types.AttributeValueMemberS{Value: sq.PartitionKey()},
-				ColumnSK: &types.AttributeValueMemberS{Value: lastQueriedSK},
-			}
-		}
-
+		state.updatePaginationKey(sq.PartitionKey(), resp.LastEvaluatedKey)
 		time.Sleep(time.Duration(RandomInt(100, 500)) * time.Millisecond)
 	}
 
-	return candidates, nil
+	return state.candidates, nil
+}
+
+// returnCandidatesOrError returns candidates if any exist, otherwise returns the error.
+func (sq *StandardQueue) returnCandidatesOrError(candidates []messageCandidate, err error) ([]messageCandidate, error) {
+	if len(candidates) > 0 {
+		return candidates, nil
+	}
+	return nil, err
+}
+
+// queryVisibleCandidates executes a query for visible messages.
+func (sq *StandardQueue) queryVisibleCandidates(
+	ctx context.Context,
+	limit int,
+	exclusiveStartKey map[string]types.AttributeValue,
+) (*dynamodb.QueryOutput, error) {
+	expr, err := expression.NewBuilder().
+		WithKeyCondition(expression.Key("PK").Equal(expression.Value(sq.PartitionKey()))).
+		WithFilter(
+			expression.Name(ColumnHiddenUntil).
+				LessThan(expression.Value(time.Now().UnixMilli())),
+		).
+		WithProjection(
+			expression.NamesList(
+				expression.Name(ColumnSK),
+				expression.Name(ColumnHiddenUntil),
+				expression.Name(ColumnEvent),
+			)).
+		Build()
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to build query expression: %w", err)
+	}
+
+	return sq.client.Query(ctx, &dynamodb.QueryInput{
+		TableName:                 &sq.table,
+		KeyConditionExpression:    expr.KeyCondition(),
+		ProjectionExpression:      expr.Projection(),
+		FilterExpression:          expr.Filter(),
+		ExpressionAttributeNames:  expr.Names(),
+		ExpressionAttributeValues: expr.Values(),
+		Limit:                     aws.Int32(int32(limit)), //nolint:gosec // G115: safe, limit is always small (<=25)
+		ExclusiveStartKey:         exclusiveStartKey,
+		ScanIndexForward:          aws.Bool(true),
+	})
+}
+
+// processQueryItems processes query items and adds them to the collect state.
+func (sq *StandardQueue) processQueryItems(
+	items []map[string]types.AttributeValue,
+	state *collectState,
+	maxMessages int,
+) error {
+	for _, item := range items {
+		candidate, err := sq.parseItemToCandidate(item)
+		if err != nil {
+			return err
+		}
+
+		state.candidates = append(state.candidates, candidate)
+		state.lastQueriedSK = candidate.sk
+
+		if len(state.candidates) >= maxMessages {
+			break
+		}
+	}
+	return nil
+}
+
+// parseItemToCandidate parses a DynamoDB item into a messageCandidate.
+func (sq *StandardQueue) parseItemToCandidate(item map[string]types.AttributeValue) (messageCandidate, error) {
+	sk, err := getSKValue(item)
+	if err != nil {
+		return messageCandidate{}, err
+	}
+
+	hiddenUntil, err := getDynamoDBAttributeNumber(ColumnHiddenUntil, item)
+	if err != nil {
+		return messageCandidate{}, err
+	}
+
+	var event events.SQSMessage
+	if err := attributevalue.Unmarshal(item[ColumnEvent], &event); err != nil {
+		return messageCandidate{}, fmt.Errorf("failed to unmarshal event: %w", err)
+	}
+
+	return messageCandidate{
+		sk:          sk,
+		hiddenUntil: hiddenUntil,
+		event:       event,
+	}, nil
 }
 
 // lockCandidates attempts to lock all candidates with a uniform visibility timeout.
@@ -293,7 +359,8 @@ func (sq *StandardQueue) lockCandidates(
 
 	var messages []events.SQSMessage
 
-	for _, c := range candidates {
+	for i := range candidates {
+		c := &candidates[i]
 		expr, err := expression.NewBuilder().
 			WithCondition(
 				expression.Equal(
@@ -336,7 +403,7 @@ func (sq *StandardQueue) lockCandidates(
 		}
 
 		msg := c.event
-		msg.ReceiptHandle = fmt.Sprintf(
+		unsignedHandle := fmt.Sprintf(
 			"%s%s%d%s%s",
 			msg.MessageId,
 			RecipientHandleSeparator,
@@ -344,6 +411,7 @@ func (sq *StandardQueue) lockCandidates(
 			RecipientHandleSeparator,
 			sq.clientID,
 		)
+		msg.ReceiptHandle = sq.signReceiptHandle(unsignedHandle)
 
 		messages = append(messages, msg)
 	}

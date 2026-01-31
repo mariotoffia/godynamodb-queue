@@ -27,15 +27,14 @@ const (
 // DynamoDBLocal controls a dockerized DynamoDB Local instance.
 // It is intended for use in integration tests.
 type DynamoDBLocal struct {
-	Name     string
-	Port     int
-	Image    string
-	InMemory bool
-	SharedDB bool
-
+	Name        string
+	Image       string
 	containerID string
-	started     bool
 	cleanups    []func()
+	Port        int
+	InMemory    bool
+	SharedDB    bool
+	started     bool
 }
 
 // Ensure DynamoDBLocal implements io.Closer
@@ -98,7 +97,7 @@ func (d *DynamoDBLocal) Start(ctx context.Context) error {
 	}
 
 	// Best-effort: remove any prior container with same name
-	runSilent("docker", "rm", "-f", d.Name)
+	_ = runSilent("docker", "rm", "-f", d.Name) //nolint:errcheck // best-effort cleanup, failure is acceptable
 
 	// Build docker run command
 	runArgs := []string{
@@ -121,7 +120,7 @@ func (d *DynamoDBLocal) Start(ctx context.Context) error {
 		runArgs = append(runArgs, "-sharedDb")
 	}
 
-	out, err := exec.CommandContext(ctx, "docker", runArgs...).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "docker", runArgs...).CombinedOutput() //nolint:gosec // G204: docker command is necessary for test infrastructure
 	if err != nil {
 		return fmt.Errorf("failed to start dynamodb-local: %w: %s", err, string(out))
 	}
@@ -134,7 +133,7 @@ func (d *DynamoDBLocal) Start(ctx context.Context) error {
 	defer cancel()
 
 	if err := waitForTCP(waitCtx, "127.0.0.1", d.Port); err != nil {
-		d.Close()
+		_ = d.Close()
 
 		return fmt.Errorf("dynamodb local did not become ready: %w", err)
 	}
@@ -148,7 +147,7 @@ func (d *DynamoDBLocal) Stop() error {
 		return nil
 	}
 
-	runSilent("docker", "stop", d.Name)
+	_ = runSilent("docker", "stop", d.Name) //nolint:errcheck // best-effort stop, container may already be stopped
 	d.started = false
 
 	return nil
@@ -168,7 +167,7 @@ func (d *DynamoDBLocal) Close() error {
 
 	d.cleanups = nil
 
-	runSilent("docker", "rm", "-f", d.Name)
+	_ = runSilent("docker", "rm", "-f", d.Name) //nolint:errcheck // best-effort cleanup, failure is acceptable
 
 	d.started = false
 	d.containerID = ""
@@ -181,31 +180,30 @@ func (d *DynamoDBLocal) EndpointURL() string {
 	return fmt.Sprintf("http://127.0.0.1:%d", d.Port)
 }
 
-// AWSConfig returns an AWS SDK config pointing at the local DynamoDB instance.
+// AWSConfig returns an AWS SDK config for the local DynamoDB instance.
+// Note: Use DynamoDBClient() instead, which properly configures the endpoint.
 func (d *DynamoDBLocal) AWSConfig() aws.Config {
 	if d == nil {
 		return aws.Config{}
 	}
 
-	endpoint := d.EndpointURL()
-
 	return aws.Config{
 		Region:      "us-east-1",
 		Credentials: credentials.NewStaticCredentialsProvider("dummy", "dummy", ""),
-		EndpointResolverWithOptions: aws.EndpointResolverWithOptionsFunc(
-			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-				return aws.Endpoint{
-					URL:           endpoint,
-					SigningRegion: region,
-				}, nil
-			},
-		),
 	}
 }
 
 // DynamoDBClient returns a DynamoDB client configured to connect to the local instance.
 func (d *DynamoDBLocal) DynamoDBClient(opts ...func(*dynamodb.Options)) *dynamodb.Client {
-	return dynamodb.NewFromConfig(d.AWSConfig(), opts...)
+	endpoint := d.EndpointURL()
+
+	allOpts := append([]func(*dynamodb.Options){
+		func(o *dynamodb.Options) {
+			o.BaseEndpoint = &endpoint
+		},
+	}, opts...)
+
+	return dynamodb.NewFromConfig(d.AWSConfig(), allOpts...)
 }
 
 // CreateTable creates a DynamoDB table for the queue.
@@ -246,7 +244,7 @@ func (d *DynamoDBLocal) CreateTable(
 	}
 
 	// Wait for table to be active
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		resp, err := client.DescribeTable(ctx, &dynamodb.DescribeTableInput{
 			TableName: aws.String(tableName),
 		})
@@ -290,6 +288,7 @@ func (d *DynamoDBLocal) WaitForReady(ctx context.Context, timeout time.Duration)
 
 // ListAllInstances returns the names of all containers tagged as godynamodb-queue DynamoDB local.
 func ListAllInstances(ctx context.Context) ([]string, error) {
+	//nolint:gosec // G204: docker command is necessary for test infrastructure
 	out, err := exec.CommandContext(
 		ctx,
 		"docker",
@@ -310,6 +309,7 @@ func ListAllInstances(ctx context.Context) ([]string, error) {
 
 // CloseAllInstances stops and removes all tagged local instances.
 func CloseAllInstances(ctx context.Context) error {
+	//nolint:gosec // G204: docker command is necessary for test infrastructure
 	out, err := exec.CommandContext(
 		ctx,
 		"docker",
@@ -331,7 +331,7 @@ func CloseAllInstances(ctx context.Context) error {
 
 	args := append([]string{"rm", "-f"}, ids...)
 
-	_, err = exec.Command("docker", args...).CombinedOutput()
+	_, err = exec.Command("docker", args...).CombinedOutput() //nolint:gosec // G204: docker command is necessary for test infrastructure
 
 	return err
 }
@@ -339,22 +339,26 @@ func CloseAllInstances(ctx context.Context) error {
 // --- helpers ---
 
 func pickFreePort() (int, error) {
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			continue
 		}
 
-		addr := ln.Addr().(*net.TCPAddr)
+		addr, ok := ln.Addr().(*net.TCPAddr)
+		if !ok {
+			_ = ln.Close()
+			continue
+		}
 		port := addr.Port
 
-		ln.Close()
+		_ = ln.Close()
 
 		if port > 0 {
 			return port, nil
 		}
 
-		time.Sleep(time.Duration(rand.Intn(50)+10) * time.Millisecond) //nolint:gosec
+		time.Sleep(time.Duration(rand.Intn(50)+10) * time.Millisecond) //nolint:gosec // G404: weak rand is fine for test jitter
 	}
 
 	return 0, fmt.Errorf("could not determine free port")
@@ -368,7 +372,7 @@ func waitForTCP(ctx context.Context, host string, port int) error {
 	for {
 		conn, err := d.DialContext(ctx, "tcp", addr)
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 
 			return nil
 		}
@@ -382,7 +386,7 @@ func waitForTCP(ctx context.Context, host string, port int) error {
 }
 
 func firstLine(s string) string {
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if s[i] == '\n' || s[i] == '\r' {
 			return s[:i]
 		}

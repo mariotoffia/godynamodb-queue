@@ -1,6 +1,7 @@
 package dynamodbqueue_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 
 // TestNew_DefaultQueueType validates that New() creates StandardQueue by default.
 func TestNew_DefaultQueueType(t *testing.T) {
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0)
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0)
 
 	assert.NotNil(t, queue)
 	assert.Equal(t, dynamodbqueue.QueueStandard, queue.Type(),
@@ -25,7 +26,7 @@ func TestNew_DefaultQueueType(t *testing.T) {
 
 // TestNew_ExplicitStandardQueue validates explicit StandardQueue creation.
 func TestNew_ExplicitStandardQueue(t *testing.T) {
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueStandard)
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueStandard)
 
 	assert.NotNil(t, queue)
 	assert.Equal(t, dynamodbqueue.QueueStandard, queue.Type())
@@ -33,7 +34,7 @@ func TestNew_ExplicitStandardQueue(t *testing.T) {
 
 // TestNew_FifoQueue validates FifoQueue creation.
 func TestNew_FifoQueue(t *testing.T) {
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueFIFO)
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueFIFO)
 
 	assert.NotNil(t, queue)
 	assert.Equal(t, dynamodbqueue.QueueFIFO, queue.Type())
@@ -47,14 +48,14 @@ func TestNew_FifoQueue(t *testing.T) {
 // TestNew_DefaultTTL validates that zero TTL uses default 14 days.
 func TestNew_DefaultTTL(t *testing.T) {
 	// We can't directly access TTL, but we can verify the queue is created
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0)
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0)
 	assert.NotNil(t, queue)
 }
 
 // TestNew_CustomTTL validates custom TTL is accepted.
 func TestNew_CustomTTL(t *testing.T) {
 	customTTL := 7 * 24 * time.Hour
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), customTTL)
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), customTTL)
 	assert.NotNil(t, queue)
 }
 
@@ -91,7 +92,7 @@ func TestNewWithClient_DefaultQueueType(t *testing.T) {
 
 // TestFluentConfiguration validates chainable configuration methods.
 func TestFluentConfiguration(t *testing.T) {
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0).
 		UseTable("test-table").
 		UseQueueName("test-queue").
 		UseClientID("test-client")
@@ -103,7 +104,7 @@ func TestFluentConfiguration(t *testing.T) {
 
 // TestFluentConfiguration_FifoQueue validates fluent config returns Queue interface.
 func TestFluentConfiguration_FifoQueue(t *testing.T) {
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0, dynamodbqueue.QueueFIFO).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0, dynamodbqueue.QueueFIFO).
 		UseTable("fifo-table").
 		UseQueueName("fifo-queue").
 		UseClientID("fifo-client")
@@ -116,43 +117,68 @@ func TestFluentConfiguration_FifoQueue(t *testing.T) {
 	assert.True(t, ok)
 }
 
-// TestUseQueueName_InvalidPanics validates panic on invalid queue name.
-func TestUseQueueName_InvalidPanics(t *testing.T) {
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0)
+// TestLocalUseQueueName_InvalidReturnsErrorOnOperation validates that invalid queue names
+// are accepted at setter time but return errors when operations are attempted.
+// This is the deferred validation pattern - no panics in library code.
+func TestLocalUseQueueName_InvalidReturnsErrorOnOperation(t *testing.T) {
+	ctx := context.Background()
 
-	assert.Panics(t, func() {
-		queue.UseQueueName("")
-	}, "should panic on empty queue name")
+	tests := []struct {
+		name      string
+		queueName string
+		wantErr   error
+	}{
+		{"empty queue name", "", dynamodbqueue.ErrQueueNameNotSet},
+		{"queue name with pipes", "queue|with|pipes", dynamodbqueue.ErrInvalidQueueName},
+		{"queue name with ampersands", "queue&with&ampersands", dynamodbqueue.ErrInvalidQueueName},
+	}
 
-	assert.Panics(t, func() {
-		queue.UseQueueName("queue|with|pipes")
-	}, "should panic on queue name with pipes")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0).
+				UseTable(tableName).
+				UseQueueName(tt.queueName).
+				UseClientID("test-client")
 
-	assert.Panics(t, func() {
-		queue.UseQueueName("queue&with&ampersands")
-	}, "should panic on queue name with ampersands")
+			// Setters don't panic - validation happens at operation time
+			_, err := queue.Count(ctx)
+			assert.ErrorIs(t, err, tt.wantErr)
+		})
+	}
 }
 
-// TestUseClientID_InvalidPanics validates panic on invalid client ID.
-func TestUseClientID_InvalidPanics(t *testing.T) {
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0)
+// TestLocalUseClientID_InvalidReturnsErrorOnOperation validates that invalid client IDs
+// are accepted at setter time but return errors when operations are attempted.
+func TestLocalUseClientID_InvalidReturnsErrorOnOperation(t *testing.T) {
+	ctx := context.Background()
 
-	assert.Panics(t, func() {
-		queue.UseClientID("")
-	}, "should panic on empty client ID")
+	tests := []struct {
+		name     string
+		clientID string
+		wantErr  error
+	}{
+		{"empty client ID", "", dynamodbqueue.ErrClientIDNotSet},
+		{"client ID with pipes", "client|with|pipes", dynamodbqueue.ErrInvalidClientID},
+		{"client ID with ampersands", "client&with&ampersands", dynamodbqueue.ErrInvalidClientID},
+	}
 
-	assert.Panics(t, func() {
-		queue.UseClientID("client|with|pipes")
-	}, "should panic on client ID with pipes")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0).
+				UseTable(tableName).
+				UseQueueName("test-queue").
+				UseClientID(tt.clientID)
 
-	assert.Panics(t, func() {
-		queue.UseClientID("client&with&ampersands")
-	}, "should panic on client ID with ampersands")
+			// Setters don't panic - validation happens at operation time
+			_, err := queue.Count(ctx)
+			assert.ErrorIs(t, err, tt.wantErr)
+		})
+	}
 }
 
 // TestLoggingConfiguration validates logging toggle.
 func TestLoggingConfiguration(t *testing.T) {
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0)
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0)
 
 	assert.False(t, queue.Logging(), "logging should be off by default")
 
@@ -165,7 +191,7 @@ func TestLoggingConfiguration(t *testing.T) {
 
 // TestPartitionKey validates partition key format.
 func TestPartitionKey(t *testing.T) {
-	queue := dynamodbqueue.New(ddbLocal.AWSConfig(), 0).
+	queue := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0).
 		UseQueueName("orders").
 		UseClientID("consumer-1")
 

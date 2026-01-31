@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -23,11 +25,20 @@ var (
 
 // TestMain sets up DynamoDB Local for all tests
 func TestMain(m *testing.M) {
-	os.Exit(runTests(m))
+	code := runTests(m)
+	cleanup()
+	os.Exit(code)
+}
+
+// cleanup ensures containers are removed regardless of how tests exit.
+func cleanup() {
+	if ddbLocal != nil {
+		_ = ddbLocal.Close()
+	}
+	_ = testutil.CloseAllInstances(context.Background())
 }
 
 // runTests runs the tests and returns the exit code.
-// This is separate from TestMain so defer statements work properly.
 func runTests(m *testing.M) int {
 	ctx := context.Background()
 
@@ -44,10 +55,14 @@ func runTests(m *testing.M) int {
 		return 1
 	}
 
-	// Cleanup: Close container and kill all orphans
-	defer func() {
-		ddbLocal.Close()
-		_ = testutil.CloseAllInstances(context.Background())
+	// Setup signal handling for cleanup on Ctrl+C
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Println("\nReceived interrupt, cleaning up containers...")
+		cleanup()
+		os.Exit(1)
 	}()
 
 	// Start container
@@ -68,7 +83,7 @@ func runTests(m *testing.M) int {
 		return 1
 	}
 
-	localQueue = dynamodbqueue.New(ddbLocal.AWSConfig(), 0).UseTable(tableName)
+	localQueue = dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0).UseTable(tableName)
 	return m.Run()
 }
 
@@ -80,7 +95,7 @@ func TestLocalCheckIfTableExistSuccess(t *testing.T) {
 func TestLocalCheckIfTableExistFailure(t *testing.T) {
 	ctx := context.Background()
 
-	exits := dynamodbqueue.New(ddbLocal.AWSConfig(), 0).
+	exits := dynamodbqueue.NewWithClient(ddbLocal.DynamoDBClient(), 0).
 		UseTable(dynamodbqueue.RandomPostfix("non-existent-table")).
 		TableExists(ctx)
 
@@ -116,7 +131,7 @@ func TestLocalPutAndPollItemsThenDeleteThem(t *testing.T) {
 
 	msgs, err := localQueue.PollMessages(
 		ctx,
-		0,
+		time.Second*2,
 		time.Minute*14,
 		10,
 		10,
@@ -165,14 +180,14 @@ func TestLocalQueueIsolation(t *testing.T) {
 	// Poll messages from queueA
 	msgsA, err := localQueue.UseQueueName("queueA-" + suffix).
 		UseClientID("client1").
-		PollMessages(ctx, 0, time.Minute, 10, 10)
+		PollMessages(ctx, time.Second*2, time.Minute, 10, 10)
 
 	require.NoError(t, err)
 
 	// Poll messages from queueB
 	msgsB, err := localQueue.UseQueueName("queueB-" + suffix).
 		UseClientID("client1").
-		PollMessages(ctx, 0, time.Minute, 10, 10)
+		PollMessages(ctx, time.Second*2, time.Minute, 10, 10)
 
 	require.NoError(t, err)
 
@@ -211,7 +226,7 @@ func TestLocalMessageOrderPreservationFIFO(t *testing.T) {
 	// Poll the messages
 	polledMessages, err := localQueue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, time.Minute, len(messages), len(messages))
+		PollMessages(ctx, time.Second*2, time.Minute, len(messages), len(messages))
 
 	require.NoError(t, err)
 	require.Len(t, polledMessages, len(messages))
@@ -247,16 +262,17 @@ func TestLocalVisibilityTimeoutFunctionality(t *testing.T) {
 	visibilityTimeout := time.Second * 2
 	polledMessages, err := localQueue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, visibilityTimeout, 1, 1)
+		PollMessages(ctx, time.Second*2, visibilityTimeout, 1, 1)
 
 	require.NoError(t, err)
 	require.Len(t, polledMessages, 1)
 	assert.Equal(t, messageBody, polledMessages[0].Body)
 
 	// Try polling immediately, should get no messages because of visibility timeout
+	// Use timeout=0 here since we expect empty results (message is hidden)
 	polledMessages, err = localQueue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, visibilityTimeout, 1, 1)
+		PollMessages(ctx, time.Millisecond*100, visibilityTimeout, 1, 1)
 
 	require.NoError(t, err)
 	require.Len(t, polledMessages, 0)
@@ -267,7 +283,7 @@ func TestLocalVisibilityTimeoutFunctionality(t *testing.T) {
 	// Now, try polling again. The message should be visible now.
 	polledMessages, err = localQueue.UseQueueName(queueName).
 		UseClientID(clientID).
-		PollMessages(ctx, 0, visibilityTimeout, 1, 1)
+		PollMessages(ctx, time.Second*2, visibilityTimeout, 1, 1)
 
 	require.NoError(t, err)
 	require.Len(t, polledMessages, 1)
@@ -436,14 +452,14 @@ func TestLocalClientIsolationWithinQueue(t *testing.T) {
 	// Poll messages using clientA
 	msgsA, err := localQueue.UseQueueName(queueName).
 		UseClientID("clientA").
-		PollMessages(ctx, 0, time.Minute, 10, 10)
+		PollMessages(ctx, time.Second*2, time.Minute, 10, 10)
 
 	require.NoError(t, err)
 
 	// Poll messages using clientB
 	msgsB, err := localQueue.UseQueueName(queueName).
 		UseClientID("clientB").
-		PollMessages(ctx, 0, time.Minute, 10, 10)
+		PollMessages(ctx, time.Second*2, time.Minute, 10, 10)
 
 	require.NoError(t, err)
 
