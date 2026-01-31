@@ -24,7 +24,7 @@ test: setenv
 	@go tool cover -html=${DIST}/test-coverage.out -o ${DIST}/_output/test-coverage.html
 
 # Integration tests - run from CI/CD
-test-ci: tests
+test-ci: test
 # Full tests including integration tests (requires Docker)
 test-full: setenv
 	@echo "Running all tests including integration tests (requires Docker)..."
