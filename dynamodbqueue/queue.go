@@ -38,6 +38,10 @@ const (
 const PartitionKeySeparator = "|"
 const RecipientHandleSeparator = "&"
 
+// MinSigningKeyLength is the minimum number of bytes required for the HMAC-SHA256 signing key.
+// Keys shorter than the hash output (32 bytes / 256 bits) reduce HMAC security per RFC 2104.
+const MinSigningKeyLength = 32
+
 // Sentinel errors for validation failures.
 var (
 	ErrTableNameNotSet  = errors.New("table name not set")
@@ -56,6 +60,7 @@ var (
 	ErrAttributeNotNumber = errors.New("attribute is not a number")
 	ErrAttributeNotString = errors.New("attribute is not a string")
 	ErrBatchWriteRetries  = errors.New("batch write failed after max retries")
+	ErrSigningKeyTooShort = errors.New("signing key too short: minimum 32 bytes required for HMAC-SHA256")
 )
 
 // MaxMessageBodySize is the maximum allowed size for a message body (256KB).
@@ -96,6 +101,13 @@ type Queue interface {
 
 	// UseClientID sets the client ID (part of the partition key).
 	UseClientID(clientID string) Queue
+
+	// UseSigningKey sets a persistent HMAC signing key for receipt handle verification.
+	// This allows receipt handles to survive instance restarts and be verified across
+	// different queue instances sharing the same key.
+	// The key must be at least MinSigningKeyLength (32) bytes; validation occurs at operation time.
+	// If not called, a random key is generated per instance (default behavior).
+	UseSigningKey(key []byte) Queue
 
 	// SetLogging enables or disables logging for queue operations.
 	SetLogging(enabled bool)

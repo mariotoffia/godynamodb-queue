@@ -50,6 +50,13 @@ func (sq *StandardQueue) UseClientID(clientID string) Queue {
 	return sq
 }
 
+// UseSigningKey sets a persistent HMAC signing key for receipt handle verification.
+// The key must be at least MinSigningKeyLength (32) bytes; validation occurs at operation time.
+func (sq *StandardQueue) UseSigningKey(key []byte) Queue {
+	sq.useSigningKey(key)
+	return sq
+}
+
 // PushMessages pushes messages to the queue.
 func (sq *StandardQueue) PushMessages(
 	ctx context.Context,

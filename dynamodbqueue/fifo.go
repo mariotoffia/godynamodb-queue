@@ -48,6 +48,13 @@ func (fq *FifoQueueImpl) UseClientID(clientID string) Queue {
 	return fq
 }
 
+// UseSigningKey sets a persistent HMAC signing key for receipt handle verification.
+// The key must be at least MinSigningKeyLength (32) bytes; validation occurs at operation time.
+func (fq *FifoQueueImpl) UseSigningKey(key []byte) Queue {
+	fq.useSigningKey(key)
+	return fq
+}
+
 // PushMessages pushes messages to the default message group.
 func (fq *FifoQueueImpl) PushMessages(
 	ctx context.Context,

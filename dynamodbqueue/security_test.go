@@ -79,8 +79,9 @@ func TestSignReceiptHandle_SignatureIsBase64URLEncoded(t *testing.T) {
 	assert.Equal(t, 44, len(signature), "HMAC-SHA256 base64 signature should be 44 chars")
 }
 
-// TestSignReceiptHandle_DifferentKeys_ProduceDifferentSignatures validates key isolation.
-func TestSignReceiptHandle_DifferentKeys_ProduceDifferentSignatures(t *testing.T) {
+// TestSignReceiptHandle_DefaultKey_ProducesSameSignatureAcrossInstances validates
+// that the deterministic default key produces identical signatures across instances.
+func TestSignReceiptHandle_DefaultKey_ProducesSameSignatureAcrossInstances(t *testing.T) {
 	bq1 := newBaseQueue(nil, 0, QueueStandard)
 	bq2 := newBaseQueue(nil, 0, QueueStandard)
 	handle := testSimpleReceiptHandle
@@ -88,7 +89,25 @@ func TestSignReceiptHandle_DifferentKeys_ProduceDifferentSignatures(t *testing.T
 	signed1 := bq1.signReceiptHandle(handle)
 	signed2 := bq2.signReceiptHandle(handle)
 
-	// Different keys should produce different signatures
+	// Default deterministic key should produce same signatures across instances
+	assert.Equal(t, signed1, signed2,
+		"default key should produce same signatures across instances")
+}
+
+// TestSignReceiptHandle_DifferentKeys_ProduceDifferentSignatures validates key isolation
+// when explicit keys are set via UseSigningKey.
+func TestSignReceiptHandle_DifferentKeys_ProduceDifferentSignatures(t *testing.T) {
+	bq1 := newBaseQueue(nil, 0, QueueStandard)
+	bq1.useSigningKey([]byte("key-one-key-one-key-one-key-one!"))
+
+	bq2 := newBaseQueue(nil, 0, QueueStandard)
+	bq2.useSigningKey([]byte("key-two-key-two-key-two-key-two!"))
+
+	handle := testSimpleReceiptHandle
+
+	signed1 := bq1.signReceiptHandle(handle)
+	signed2 := bq2.signReceiptHandle(handle)
+
 	assert.NotEqual(t, signed1, signed2,
 		"different signing keys should produce different signatures")
 }
@@ -219,10 +238,13 @@ func TestVerifyReceiptHandle_EmptySignature_ReturnsFalse(t *testing.T) {
 	assert.Empty(t, unsignedHandle)
 }
 
-// TestVerifyReceiptHandle_WrongKey_ReturnsFalse validates cross-queue rejection.
+// TestVerifyReceiptHandle_WrongKey_ReturnsFalse validates cross-key rejection.
 func TestVerifyReceiptHandle_WrongKey_ReturnsFalse(t *testing.T) {
 	bq1 := newBaseQueue(nil, 0, QueueStandard)
+	bq1.useSigningKey([]byte("key-one-key-one-key-one-key-one!"))
+
 	bq2 := newBaseQueue(nil, 0, QueueStandard)
+	bq2.useSigningKey([]byte("key-two-key-two-key-two-key-two!"))
 
 	futureTime := time.Now().Add(time.Hour).UnixMilli()
 	handle := "pk&sk&" + strconv.FormatInt(futureTime, 10) + "&owner"
@@ -330,31 +352,28 @@ func TestVerifyReceiptHandle_MultipleVerifications_Idempotent(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Signing Key Generation Tests
+// Default Signing Key Tests
 //
-// Tests for newBaseQueue signing key generation using crypto/rand.
+// Tests for newBaseQueue deterministic default signing key.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// TestNewBaseQueue_SigningKey_Generated validates key is 32 bytes.
-func TestNewBaseQueue_SigningKey_Generated(t *testing.T) {
+// TestNewBaseQueue_SigningKey_IsDefaultKey validates the default key is used.
+func TestNewBaseQueue_SigningKey_IsDefaultKey(t *testing.T) {
 	bq := newBaseQueue(nil, 0, QueueStandard)
 
+	assert.Equal(t, defaultSigningKey, bq.signingKey,
+		"new queue should use the deterministic default signing key")
 	assert.Len(t, bq.signingKey, 32, "signing key should be 32 bytes (256 bits)")
 }
 
-// TestNewBaseQueue_SigningKey_Unique validates each instance has unique key.
-func TestNewBaseQueue_SigningKey_Unique(t *testing.T) {
-	seen := make(map[string]bool)
-
-	for i := 0; i < 100; i++ {
+// TestNewBaseQueue_SigningKey_DeterministicAcrossInstances validates all instances
+// share the same default key for cross-instance receipt handle verification.
+func TestNewBaseQueue_SigningKey_DeterministicAcrossInstances(t *testing.T) {
+	for range 100 {
 		bq := newBaseQueue(nil, 0, QueueStandard)
-		keyStr := string(bq.signingKey)
-
-		assert.False(t, seen[keyStr], "signing key %d should be unique", i)
-		seen[keyStr] = true
+		assert.Equal(t, defaultSigningKey, bq.signingKey,
+			"all instances should share the same default signing key")
 	}
-
-	assert.Len(t, seen, 100, "all 100 keys should be unique")
 }
 
 // TestNewBaseQueue_SigningKey_NotZero validates key is not all zeros.
@@ -370,20 +389,4 @@ func TestNewBaseQueue_SigningKey_NotZero(t *testing.T) {
 	}
 
 	assert.False(t, allZero, "signing key should not be all zeros")
-}
-
-// TestNewBaseQueue_SigningKey_HasEntropy validates key has good entropy distribution.
-func TestNewBaseQueue_SigningKey_HasEntropy(t *testing.T) {
-	bq := newBaseQueue(nil, 0, QueueStandard)
-
-	// Count unique bytes - cryptographic key should have high diversity
-	uniqueBytes := make(map[byte]bool)
-	for _, b := range bq.signingKey {
-		uniqueBytes[b] = true
-	}
-
-	// With 32 random bytes, we expect at least 15+ unique values
-	// (probability of fewer is astronomically low)
-	assert.GreaterOrEqual(t, len(uniqueBytes), 15,
-		"signing key should have good byte diversity (got %d unique bytes)", len(uniqueBytes))
 }

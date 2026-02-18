@@ -3,7 +3,6 @@ package dynamodbqueue
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
@@ -13,6 +12,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
+
+// defaultSigningKey is used when no user-provided key is set via UseSigningKey.
+// It is deterministic so that receipt handles can be verified across queue instances
+// without explicit key management. For production use with tamper-proof receipt handles,
+// provide a unique secret key via UseSigningKey.
+var defaultSigningKey = []byte("do-use-key-here-replace-me-now!!")
 
 // baseQueue contains shared configuration and functionality
 // for both StandardQueue and FifoQueue implementations.
@@ -48,19 +53,12 @@ func newBaseQueue(client *dynamodb.Client, ttl time.Duration, queueType QueueTyp
 		ttl = 14 * 24 * time.Hour
 	}
 
-	// Generate a cryptographically secure random signing key for HMAC receipt handle signing.
-	// Uses crypto/rand.Read() directly for proper entropy without modulo bias.
-	signingKey := make([]byte, 32)
-	if _, err := rand.Read(signingKey); err != nil {
-		panic(fmt.Sprintf("failed to generate signing key: %v", err))
-	}
-
 	return &baseQueue{
 		client:       client,
 		ttl:          ttl,
 		randomDigits: MinRandomDigits,
 		queueType:    queueType,
-		signingKey:   signingKey,
+		signingKey:   defaultSigningKey,
 	}
 }
 
@@ -164,6 +162,14 @@ func (bq *baseQueue) Client() *dynamodb.Client {
 	return bq.client
 }
 
+// useSigningKey sets a user-provided signing key, replacing the random default.
+// The key is defensively copied to prevent external mutation.
+func (bq *baseQueue) useSigningKey(key []byte) {
+	keyCopy := make([]byte, len(key))
+	copy(keyCopy, key)
+	bq.signingKey = keyCopy
+}
+
 // validateOperation ensures table, queueName and clientID are set and valid.
 func (bq *baseQueue) validateOperation() error {
 	if bq.table == "" {
@@ -184,6 +190,10 @@ func (bq *baseQueue) validateOperation() error {
 
 	if !isValidClientID(bq.clientID) {
 		return ErrInvalidClientID
+	}
+
+	if len(bq.signingKey) < MinSigningKeyLength {
+		return ErrSigningKeyTooShort
 	}
 
 	return nil

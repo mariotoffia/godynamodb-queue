@@ -125,9 +125,10 @@ func TestValidateOperation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			bq := &baseQueue{
-				table:     tt.table,
-				queueName: tt.queueName,
-				clientID:  tt.clientID,
+				table:      tt.table,
+				queueName:  tt.queueName,
+				clientID:   tt.clientID,
+				signingKey: make([]byte, MinSigningKeyLength),
 			}
 
 			err := bq.validateOperation()
@@ -395,9 +396,10 @@ func TestValidateOperation_ValidInputs_NoError(t *testing.T) {
 			}
 
 			bq := &baseQueue{
-				table:     tt.table,
-				queueName: queueName,
-				clientID:  clientID,
+				table:      tt.table,
+				queueName:  queueName,
+				clientID:   clientID,
+				signingKey: make([]byte, MinSigningKeyLength),
 			}
 
 			err := bq.validateOperation()
